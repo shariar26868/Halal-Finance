@@ -4,8 +4,9 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
+    "dev": "vite --port 3054",
     "build": "vite build",
-    "dev": "vite"
+    "preview": "vite preview --port 3054"
   },
   "dependencies": {
     "@emotion/react": "11.14.0",
