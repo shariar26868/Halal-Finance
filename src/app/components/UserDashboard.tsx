@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { apiCall } from '../../utils/supabase';
 import { Button } from './ui/button';
@@ -16,9 +16,10 @@ import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { motion } from 'motion/react';
-import { Wallet, Plus, CheckCircle2, Clock, XCircle, Calendar, CreditCard, FileText, Megaphone, AlertCircle, Info } from 'lucide-react';
+import { Wallet, Plus, CheckCircle2, Clock, XCircle, Calendar, CreditCard, FileText, Megaphone, AlertCircle, Upload, Image, Eye } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
+import { BANKS, PAYMENT_METHODS } from '../constants/banks';
 
 interface Payment {
   id: string;
@@ -31,6 +32,7 @@ interface Payment {
   status: 'pending' | 'approved' | 'rejected';
   rejectionReason?: string;
   createdBy: string;
+  screenshotPath?: string;
 }
 
 interface Announcement {
@@ -49,14 +51,34 @@ export default function UserDashboard() {
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+  const [screenshotFile, setScreenshotFile] = useState<File | null>(null);
+  const [screenshotPreview, setScreenshotPreview] = useState<string | null>(null);
+  const [viewingScreenshot, setViewingScreenshot] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const INSTALLMENT_RATE = 5000;
+  const today = new Date().toISOString().split('T')[0];
 
   const [newPayment, setNewPayment] = useState({
-    paymentDate: '',
+    paymentDate: today,
     paidFrom: '',
+    bankName: '',
     transactionId: '',
-    paidMonth: '',
-    paidAmount: '',
+    numMonths: '1',
+    paidAmount: String(INSTALLMENT_RATE),
   });
+
+  // Auto-calculate amount when numMonths changes
+  const handleNumMonthsChange = (val: string) => {
+    const months = parseInt(val) || 1;
+    setNewPayment((prev) => ({ ...prev, numMonths: val, paidAmount: String(months * INSTALLMENT_RATE) }));
+  };
+
+  // Preview: full months + extra
+  const previewAmount = parseFloat(newPayment.paidAmount) || 0;
+  const previewMonths = Math.floor(previewAmount / INSTALLMENT_RATE);
+  const previewExtra = previewAmount % INSTALLMENT_RATE;
 
   useEffect(() => {
     fetchPayments();
@@ -91,23 +113,83 @@ export default function UserDashboard() {
 
   const handleSubmitPayment = async (e: React.FormEvent) => {
     e.preventDefault();
+    setSubmitting(true);
     try {
+      // Build paidFrom: if bank, combine method + bank name
+      const paidFrom = newPayment.paidFrom === 'bank' && newPayment.bankName
+        ? `Bank - ${newPayment.bankName}`
+        : newPayment.paidFrom;
+
+      // Validate bank selection
+      if (newPayment.paidFrom === 'bank' && !newPayment.bankName) {
+        toast.error('Please select a bank');
+        setSubmitting(false);
+        return;
+      }
+
+      // Validate screenshot is required
+      if (!screenshotFile) {
+        toast.error('Payment screenshot is required');
+        setSubmitting(false);
+        return;
+      }
+
+      // Encode screenshot if provided
+      let paymentScreenshot = null;
+      if (screenshotFile) {
+        const base64 = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            const result = e.target?.result?.toString().split(',')[1] || '';
+            resolve(result);
+          };
+          reader.readAsDataURL(screenshotFile);
+        });
+        paymentScreenshot = {
+          fileName: screenshotFile.name,
+          fileData: base64,
+          fileType: screenshotFile.type,
+        };
+      }
+
       await apiCall('/payments/submit', {
         method: 'POST',
-        body: JSON.stringify(newPayment),
+        body: JSON.stringify({
+          paymentDate: newPayment.paymentDate,
+          paidFrom,
+          transactionId: newPayment.transactionId,
+          paidAmount: newPayment.paidAmount,
+          paymentScreenshot,
+        }),
       });
       toast.success('Payment submitted for approval');
       setDialogOpen(false);
-      setNewPayment({
-        paymentDate: '',
-        paidFrom: '',
-        transactionId: '',
-        paidMonth: '',
-        paidAmount: '',
-      });
+      setNewPayment({ paymentDate: today, paidFrom: '', bankName: '', transactionId: '', numMonths: '1', paidAmount: String(INSTALLMENT_RATE) });
+      setScreenshotFile(null);
+      setScreenshotPreview(null);
       fetchPayments();
     } catch (error: any) {
       toast.error(error.message || 'Failed to submit payment');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleScreenshotChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { toast.error('Please upload an image file'); return; }
+    if (file.size > 5 * 1024 * 1024) { toast.error('Image must be less than 5MB'); return; }
+    setScreenshotFile(file);
+    setScreenshotPreview(URL.createObjectURL(file));
+  };
+
+  const handleViewScreenshot = async (paymentId: string) => {
+    try {
+      const data = await apiCall(`/payments/screenshot/${encodeURIComponent(paymentId)}`);
+      setViewingScreenshot(data.url);
+    } catch {
+      toast.error('Failed to load screenshot');
     }
   };
 
@@ -187,7 +269,7 @@ export default function UserDashboard() {
                     isUrgent
                       ? 'bg-destructive/10 border-destructive/30'
                       : isImportant
-                      ? 'bg-yellow-50 border-yellow-200'
+                      ? 'bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-700'
                       : 'bg-primary/5 border-primary/20'
                   }`}
                 >
@@ -198,7 +280,7 @@ export default function UserDashboard() {
                   )}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
-                      <p className="font-semibold text-sm">{ann.title}</p>
+                      <p className="font-semibold text-sm text-foreground">{ann.title}</p>
                       {isUrgent && <Badge className="bg-destructive/10 text-destructive text-xs">Urgent</Badge>}
                       {isImportant && <Badge className="bg-yellow-100 text-yellow-700 text-xs">Important</Badge>}
                     </div>
@@ -243,10 +325,29 @@ export default function UserDashboard() {
                 <CheckCircle2 className="w-6 h-6 text-primary" />
               </div>
             </div>
-            <p className="text-3xl font-bold">{payments.filter((p) => p.status === 'approved').length}</p>
+            <p className="text-3xl font-bold">{payments.filter((p) => p.status === 'approved' && p.paidMonth !== 'extra').length}</p>
             <p className="text-sm text-muted-foreground mt-1">Approved Payments</p>
           </Card>
         </motion.div>
+
+        {/* Extra amount card */}
+        {payments.filter(p => p.paidMonth === 'extra' && p.status !== 'rejected').length > 0 && (
+          <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}>
+            <Card className="p-4 border-yellow-200 bg-yellow-50 dark:bg-yellow-900/20 dark:border-yellow-700">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-yellow-100 dark:bg-yellow-800 rounded-lg">
+                  <CreditCard className="w-5 h-5 text-yellow-600" />
+                </div>
+                <div>
+                  <p className="font-semibold text-yellow-700 dark:text-yellow-400">Extra Amount on Account</p>
+                  <p className="text-sm text-yellow-600 dark:text-yellow-500">
+                    ৳{payments.filter(p => p.paidMonth === 'extra' && p.status !== 'rejected').reduce((s, p) => s + p.paidAmount, 0).toLocaleString()} — will be applied to your next installment
+                  </p>
+                </div>
+              </div>
+            </Card>
+          </motion.div>
+        )}
 
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -277,8 +378,8 @@ export default function UserDashboard() {
                         id="paymentDate"
                         type="date"
                         value={newPayment.paymentDate}
-                        onChange={(e) => setNewPayment({ ...newPayment, paymentDate: e.target.value })}
-                        required
+                        readOnly
+                        className="bg-muted cursor-not-allowed"
                       />
                     </div>
 
@@ -286,20 +387,38 @@ export default function UserDashboard() {
                       <Label htmlFor="paidFrom">Paid From</Label>
                       <Select
                         value={newPayment.paidFrom}
-                        onValueChange={(value) => setNewPayment({ ...newPayment, paidFrom: value })}
+                        onValueChange={(value) => setNewPayment({ ...newPayment, paidFrom: value, bankName: '' })}
                       >
                         <SelectTrigger>
                           <SelectValue placeholder="Select payment method" />
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="bank">Bank Transfer</SelectItem>
-                          <SelectItem value="bkash">bKash</SelectItem>
-                          <SelectItem value="nagad">Nagad</SelectItem>
-                          <SelectItem value="rocket">Rocket</SelectItem>
-                          <SelectItem value="cash">Cash</SelectItem>
+                          {PAYMENT_METHODS.map((m) => (
+                            <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>
+                          ))}
                         </SelectContent>
                       </Select>
                     </div>
+
+                    {newPayment.paidFrom === 'bank' && (
+                      <div className="space-y-2">
+                        <Label htmlFor="bankName">Select Bank</Label>
+                        <Select
+                          value={newPayment.bankName}
+                          onValueChange={(value) => setNewPayment({ ...newPayment, bankName: value })}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select your bank" />
+                          </SelectTrigger>
+                          <SelectContent className="max-h-60">
+                            {BANKS.map((bank) => (
+                              <SelectItem key={bank} value={bank}>{bank}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
 
                     <div className="space-y-2">
                       <Label htmlFor="transactionId">Transaction ID</Label>
@@ -313,14 +432,22 @@ export default function UserDashboard() {
                     </div>
 
                     <div className="space-y-2">
-                      <Label htmlFor="paidMonth">Paid Month</Label>
-                      <Input
-                        id="paidMonth"
-                        type="month"
-                        value={newPayment.paidMonth}
-                        onChange={(e) => setNewPayment({ ...newPayment, paidMonth: e.target.value })}
-                        required
-                      />
+                      <Label htmlFor="numMonths">Number of Months</Label>
+                      <Select
+                        value={newPayment.numMonths}
+                        onValueChange={handleNumMonthsChange}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select months" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {Array.from({ length: 12 }, (_, i) => i + 1).map((n) => (
+                            <SelectItem key={n} value={String(n)}>
+                              {n} month{n > 1 ? 's' : ''} — ৳{(n * INSTALLMENT_RATE).toLocaleString()}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </div>
 
                     <div className="space-y-2">
@@ -328,16 +455,63 @@ export default function UserDashboard() {
                       <Input
                         id="paidAmount"
                         type="number"
-                        step="0.01"
-                        placeholder="0.00"
+                        step="1"
+                        min={INSTALLMENT_RATE}
+                        placeholder="5000"
                         value={newPayment.paidAmount}
-                        onChange={(e) => setNewPayment({ ...newPayment, paidAmount: e.target.value })}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          const months = Math.floor(parseFloat(val) / INSTALLMENT_RATE) || 1;
+                          setNewPayment((prev) => ({ ...prev, paidAmount: val, numMonths: String(Math.min(months, 12)) }));
+                        }}
                         required
+                      />
+                      {previewAmount >= INSTALLMENT_RATE && (
+                        <div className="p-3 bg-primary/5 border border-primary/20 rounded-lg text-sm space-y-1">
+                          <p className="font-medium text-primary">Payment Preview:</p>
+                          <p className="text-muted-foreground">✅ {previewMonths} month{previewMonths > 1 ? 's' : ''} × ৳{INSTALLMENT_RATE.toLocaleString()} = ৳{(previewMonths * INSTALLMENT_RATE).toLocaleString()}</p>
+                          {previewExtra > 0 && (
+                            <p className="text-yellow-600">⚠️ Extra ৳{previewExtra.toLocaleString()} will be recorded separately</p>
+                          )}
+                        </div>
+                      )}
+                      {previewAmount > 0 && previewAmount < INSTALLMENT_RATE && (
+                        <p className="text-destructive text-xs">Minimum amount is ৳{INSTALLMENT_RATE.toLocaleString()}</p>
+                      )}
+                    </div>
+
+                    {/* Screenshot Upload */}
+                    <div className="space-y-2">
+                      <Label>Payment Screenshot</Label>
+                      <div
+                        className="border-2 border-dashed rounded-lg p-4 text-center cursor-pointer hover:border-primary/50 transition-colors"
+                        onClick={() => fileInputRef.current?.click()}
+                      >
+                        {screenshotPreview ? (
+                          <div className="space-y-2">
+                            <img src={screenshotPreview} alt="Preview" className="max-h-32 mx-auto rounded object-contain" />
+                            <p className="text-xs text-primary">{screenshotFile?.name}</p>
+                            <p className="text-xs text-muted-foreground">Click to replace</p>
+                          </div>
+                        ) : (
+                          <div className="space-y-1">
+                            <Upload className="w-6 h-6 mx-auto text-muted-foreground" />
+                            <p className="text-sm text-muted-foreground">Upload payment screenshot</p>
+                            <p className="text-xs text-muted-foreground">Image up to 5MB</p>
+                          </div>
+                        )}
+                      </div>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={handleScreenshotChange}
                       />
                     </div>
 
-                    <Button type="submit" className="w-full">
-                      Submit for Approval
+                    <Button type="submit" className="w-full" disabled={submitting}>
+                      {submitting ? 'Submitting...' : 'Submit for Approval'}
                     </Button>
                   </form>
                 </DialogContent>
@@ -394,7 +568,11 @@ export default function UserDashboard() {
                           </div>
                           <div>
                             <p className="text-muted-foreground text-xs">For Month</p>
-                            <p className="font-medium">{payment.paidMonth}</p>
+                            <p className="font-medium">
+                              {payment.paidMonth === 'extra'
+                                ? <span className="text-yellow-600">Extra Amount</span>
+                                : payment.paidMonth}
+                            </p>
                           </div>
                         </div>
 
@@ -410,6 +588,17 @@ export default function UserDashboard() {
                         <p className="text-xs text-muted-foreground">
                           Submitted {format(new Date(payment.dateOfEntry), 'MMM dd')}
                         </p>
+                        {payment.screenshotPath && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="mt-2 gap-1 text-xs"
+                            onClick={() => handleViewScreenshot(payment.id)}
+                          >
+                            <Image className="w-3 h-3" />
+                            View Receipt
+                          </Button>
+                        )}
                       </div>
                     </div>
                   </motion.div>
@@ -419,6 +608,23 @@ export default function UserDashboard() {
           </Card>
         </motion.div>
       </div>
+
+      {/* Screenshot Viewer Dialog */}
+      <Dialog open={!!viewingScreenshot} onOpenChange={() => setViewingScreenshot(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Image className="w-5 h-5 text-primary" />
+              Payment Screenshot
+            </DialogTitle>
+          </DialogHeader>
+          {viewingScreenshot && (
+            <div className="border rounded-lg overflow-hidden bg-muted/30">
+              <img src={viewingScreenshot} alt="Payment Screenshot" className="w-full object-contain max-h-[70vh]" />
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

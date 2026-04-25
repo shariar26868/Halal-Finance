@@ -421,11 +421,22 @@ app.post("/user/kyc/upload", async (c) => {
     kycDocs[documentType] = filePath;
 
     userProfile.kycDocuments = kycDocs;
-    userProfile.kycStatus = 'submitted';
+
+    // If user was already approved and is replacing a document,
+    // reset to 'submitted' so admin must re-approve
+    if (userProfile.kycStatus === 'approved') {
+      userProfile.kycStatus = 'submitted';
+      userProfile.kycResubmitted = true;
+      userProfile.resubmittedAt = new Date().toISOString();
+      console.log(`User ${user.id} replaced a document after approval - status reset to submitted`);
+    } else {
+      userProfile.kycStatus = 'submitted';
+    }
+
     userProfile.updatedAt = new Date().toISOString();
 
     await kv.set(`user:${user.id}`, userProfile);
-    console.log(`KYC document uploaded for user ${user.id}, status set to submitted:`, userProfile);
+    console.log(`KYC document uploaded for user ${user.id}, status: ${userProfile.kycStatus}`);
 
     return c.json({
       message: 'Document uploaded successfully',
@@ -480,44 +491,167 @@ app.get("/user/kyc/document/:userId/:docType", async (c) => {
   }
 });
 
+// Get signed URL for payment screenshot
+app.get("/payments/screenshot/:paymentId", async (c) => {
+  try {
+    const { user, error } = await verifyAuth(c.req.header('Authorization') || null);
+    if (error || !user) return c.json({ error: error || 'Unauthorized' }, 401);
+
+    const paymentId = decodeURIComponent(c.req.param('paymentId'));
+    const payment = await kv.get(paymentId);
+    if (!payment) return c.json({ error: 'Payment not found' }, 404);
+
+    // Only admin or the payment owner can view
+    const userProfile = await kv.get(`user:${user.id}`);
+    if (userProfile?.role !== 'admin' && payment.userId !== user.id) {
+      return c.json({ error: 'Forbidden' }, 403);
+    }
+
+    if (!payment.screenshotPath) return c.json({ error: 'No screenshot for this payment' }, 404);
+
+    const supabase = getServiceClient();
+    const { data, error: signError } = await supabase.storage
+      .from('make-bcce5cc4-kyc-documents')
+      .createSignedUrl(payment.screenshotPath, 3600);
+
+    if (signError) return c.json({ error: 'Failed to generate URL' }, 500);
+
+    return c.json({ url: data.signedUrl });
+  } catch (error) {
+    return c.json({ error: `Failed: ${error.message}` }, 500);
+  }
+});
+
 // ========== PAYMENT ENDPOINTS ==========
 
 // Submit payment request
 app.post("/payments/submit", async (c) => {
   try {
     const { user, error } = await verifyAuth(c.req.header('Authorization') || null);
-
-    if (error || !user) {
-      return c.json({ error: error || 'Unauthorized' }, 401);
-    }
+    if (error || !user) return c.json({ error: error || 'Unauthorized' }, 401);
 
     const body = await c.req.json();
-    const { paymentDate, paidFrom, transactionId, paidMonth, paidAmount } = body;
+    const { paymentDate, paidFrom, transactionId, paidAmount, paymentScreenshot } = body;
 
-    if (!paymentDate || !paidFrom || !transactionId || !paidMonth || !paidAmount) {
+    if (!paymentDate || !paidFrom || !transactionId || !paidAmount) {
       return c.json({ error: 'Missing required fields' }, 400);
     }
 
-    const paymentId = `payment:${user.id}:${Date.now()}`;
-    const payment = {
-      id: paymentId,
-      userId: user.id,
-      paymentDate,
-      dateOfEntry: new Date().toISOString(),
-      paidFrom,
-      transactionId,
-      paidMonth,
-      paidAmount: parseFloat(paidAmount),
-      status: 'pending',
-      createdBy: 'user',
-      createdAt: new Date().toISOString()
-    };
+    if (!paymentScreenshot?.fileData) {
+      return c.json({ error: 'Payment screenshot is required' }, 400);
+    }
 
-    await kv.set(paymentId, payment);
+    const INSTALLMENT_RATE = 5000;
+    const amount = parseFloat(paidAmount);
+
+    if (amount < INSTALLMENT_RATE) {
+      return c.json({ error: `Minimum payment amount is ৳${INSTALLMENT_RATE}` }, 400);
+    }
+
+    // Upload screenshot to storage
+    let screenshotPath: string | null = null;
+    if (paymentScreenshot?.fileData && paymentScreenshot?.fileName) {
+      try {
+        const supabase = getServiceClient();
+        const bucketName = 'make-bcce5cc4-kyc-documents';
+        const fileBuffer = Uint8Array.from(atob(paymentScreenshot.fileData), (c) => c.charCodeAt(0));
+        const sanitizedName = paymentScreenshot.fileName.replace(/[^a-zA-Z0-9._-]/g, '_').substring(0, 100);
+        screenshotPath = `${user.id}/payments/${Date.now()}_${sanitizedName}`;
+        const { error: uploadError } = await supabase.storage
+          .from(bucketName)
+          .upload(screenshotPath, fileBuffer, {
+            contentType: paymentScreenshot.fileType || 'image/jpeg',
+            upsert: false,
+          });
+        if (uploadError) {
+          console.log(`Screenshot upload error: ${uploadError.message}`);
+          screenshotPath = null;
+        }
+      } catch (e: any) {
+        console.log(`Screenshot upload failed: ${e.message}`);
+      }
+    }
+
+    // Find user's last approved payment month to determine next month
+    const allUserPayments = await kv.getByPrefix(`payment:${user.id}:`);
+    const approvedPayments = allUserPayments
+      .filter((p: any) => p.status === 'approved' && p.paidMonth)
+      .sort((a: any, b: any) => b.paidMonth.localeCompare(a.paidMonth));
+
+    // Determine starting month: next after last approved, or current month if no history
+    let startMonth: Date;
+    if (approvedPayments.length > 0) {
+      const lastMonth = approvedPayments[0].paidMonth; // e.g. "2026-03"
+      const [y, m] = lastMonth.split('-').map(Number);
+      startMonth = new Date(y, m, 1); // next month after last paid
+    } else {
+      // No payment history - start from current month
+      const now = new Date();
+      startMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    }
+
+    // Calculate how many full installments and extra
+    const fullMonths = Math.floor(amount / INSTALLMENT_RATE);
+    const extraAmount = amount % INSTALLMENT_RATE;
+
+    // Create payment records for each month
+    const createdPayments = [];
+    const now = Date.now();
+
+    for (let i = 0; i < fullMonths; i++) {
+      const monthDate = new Date(startMonth.getFullYear(), startMonth.getMonth() + i, 1);
+      const paidMonth = `${monthDate.getFullYear()}-${String(monthDate.getMonth() + 1).padStart(2, '0')}`;
+      const paymentId = `payment:${user.id}:${now + i}`;
+
+      const payment = {
+        id: paymentId,
+        userId: user.id,
+        paymentDate,
+        dateOfEntry: new Date().toISOString(),
+        paidFrom,
+        transactionId,
+        paidMonth,
+        paidAmount: INSTALLMENT_RATE,
+        status: 'pending',
+        createdBy: 'user',
+        createdAt: new Date().toISOString(),
+        isPartOfBatch: true,
+        batchTotal: amount,
+        batchMonths: fullMonths,
+        ...(screenshotPath ? { screenshotPath } : {}),
+      };
+
+      await kv.set(paymentId, payment);
+      createdPayments.push(payment);
+    }
+
+    // Handle extra amount - create a separate extra payment record
+    let extraPayment = null;
+    if (extraAmount > 0) {
+      const extraId = `payment:${user.id}:${now + fullMonths}`;
+      extraPayment = {
+        id: extraId,
+        userId: user.id,
+        paymentDate,
+        dateOfEntry: new Date().toISOString(),
+        paidFrom,
+        transactionId,
+        paidMonth: 'extra',
+        paidAmount: extraAmount,
+        status: 'pending',
+        createdBy: 'user',
+        createdAt: new Date().toISOString(),
+        isExtra: true,
+        ...(screenshotPath ? { screenshotPath } : {}),
+      };
+      await kv.set(extraId, extraPayment);
+    }
 
     return c.json({
-      message: 'Payment submitted for approval',
-      payment
+      message: `Payment submitted for ${fullMonths} month(s)${extraAmount > 0 ? ` + ৳${extraAmount} extra` : ''}`,
+      monthsCovered: createdPayments.map(p => p.paidMonth),
+      extraAmount: extraAmount > 0 ? extraAmount : null,
+      payments: createdPayments,
     });
   } catch (error) {
     console.log(`Payment submission error: ${error.message}`);
@@ -707,33 +841,113 @@ app.post("/admin/payments/add", async (c) => {
     }
 
     const body = await c.req.json();
-    const { userId, paymentDate, paidFrom, transactionId, paidMonth, paidAmount } = body;
+    const { userId, paymentDate, paidFrom, transactionId, paidMonth, paidAmount, paymentScreenshot } = body;
 
-    if (!userId || !paymentDate || !paidFrom || !paidMonth || !paidAmount) {
+    if (!userId || !paymentDate || !paidFrom || !paidAmount) {
       return c.json({ error: 'Missing required fields' }, 400);
     }
 
-    const paymentId = `payment:${userId}:${Date.now()}`;
-    const payment = {
-      id: paymentId,
-      userId,
-      paymentDate,
-      dateOfEntry: new Date().toISOString(),
-      paidFrom,
-      transactionId: transactionId || 'N/A',
-      paidMonth,
-      paidAmount: parseFloat(paidAmount),
-      status: 'approved',
-      createdBy: 'admin',
-      createdById: user.id,
-      createdAt: new Date().toISOString()
-    };
+    const INSTALLMENT_RATE = 5000;
+    const amount = parseFloat(paidAmount);
 
-    await kv.set(paymentId, payment);
+    if (amount < INSTALLMENT_RATE) {
+      return c.json({ error: `Minimum payment amount is ৳${INSTALLMENT_RATE}` }, 400);
+    }
+
+    // Upload screenshot if provided
+    let screenshotPath: string | null = null;
+    if (paymentScreenshot?.fileData && paymentScreenshot?.fileName) {
+      try {
+        const supabase = getServiceClient();
+        const bucketName = 'make-bcce5cc4-kyc-documents';
+        const fileBuffer = Uint8Array.from(atob(paymentScreenshot.fileData), (c) => c.charCodeAt(0));
+        const sanitizedName = paymentScreenshot.fileName.replace(/[^a-zA-Z0-9._-]/g, '_').substring(0, 100);
+        screenshotPath = `${userId}/payments/${Date.now()}_${sanitizedName}`;
+        const { error: uploadError } = await supabase.storage
+          .from(bucketName)
+          .upload(screenshotPath, fileBuffer, {
+            contentType: paymentScreenshot.fileType || 'image/jpeg',
+            upsert: false,
+          });
+        if (uploadError) screenshotPath = null;
+      } catch (e: any) {
+        console.log(`Admin screenshot upload failed: ${e.message}`);
+      }
+    }
+
+    // Find user's last approved payment month
+    const allUserPayments = await kv.getByPrefix(`payment:${userId}:`);
+    const approvedPayments = allUserPayments
+      .filter((p: any) => p.status === 'approved' && p.paidMonth && p.paidMonth !== 'extra')
+      .sort((a: any, b: any) => b.paidMonth.localeCompare(a.paidMonth));
+
+    let startMonth: Date;
+    if (approvedPayments.length > 0) {
+      const lastMonth = approvedPayments[0].paidMonth;
+      const [y, m] = lastMonth.split('-').map(Number);
+      startMonth = new Date(y, m, 1);
+    } else {
+      const now = new Date();
+      startMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    }
+
+    const fullMonths = Math.floor(amount / INSTALLMENT_RATE);
+    const extraAmount = amount % INSTALLMENT_RATE;
+    const createdPayments = [];
+    const nowTs = Date.now();
+
+    for (let i = 0; i < fullMonths; i++) {
+      const monthDate = new Date(startMonth.getFullYear(), startMonth.getMonth() + i, 1);
+      const monthKey = `${monthDate.getFullYear()}-${String(monthDate.getMonth() + 1).padStart(2, '0')}`;
+      const paymentId = `payment:${userId}:${nowTs + i}`;
+
+      const payment = {
+        id: paymentId,
+        userId,
+        paymentDate,
+        dateOfEntry: new Date().toISOString(),
+        paidFrom,
+        transactionId: transactionId || 'N/A',
+        paidMonth: monthKey,
+        paidAmount: INSTALLMENT_RATE,
+        status: 'approved',
+        createdBy: 'admin',
+        createdById: user.id,
+        createdAt: new Date().toISOString(),
+        isPartOfBatch: true,
+        batchTotal: amount,
+        ...(screenshotPath ? { screenshotPath } : {}),
+      };
+
+      await kv.set(paymentId, payment);
+      createdPayments.push(payment);
+    }
+
+    // Extra amount record
+    if (extraAmount > 0) {
+      const extraId = `payment:${userId}:${nowTs + fullMonths}`;
+      await kv.set(extraId, {
+        id: extraId,
+        userId,
+        paymentDate,
+        dateOfEntry: new Date().toISOString(),
+        paidFrom,
+        transactionId: transactionId || 'N/A',
+        paidMonth: 'extra',
+        paidAmount: extraAmount,
+        status: 'approved',
+        createdBy: 'admin',
+        createdById: user.id,
+        createdAt: new Date().toISOString(),
+        isExtra: true,
+        ...(screenshotPath ? { screenshotPath } : {}),
+      });
+    }
 
     return c.json({
-      message: 'Payment added successfully',
-      payment
+      message: `Payment added for ${fullMonths} month(s)${extraAmount > 0 ? ` + ৳${extraAmount} extra` : ''}`,
+      monthsCovered: createdPayments.map(p => p.paidMonth),
+      extraAmount: extraAmount > 0 ? extraAmount : null,
     });
   } catch (error) {
     console.log(`Admin payment addition error: ${error.message}`);

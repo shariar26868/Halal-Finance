@@ -3,9 +3,8 @@ import { useAuth } from '../context/AuthContext';
 import { apiCall } from '../../utils/supabase';
 import { Button } from './ui/button';
 import { Card } from './ui/card';
-import { Badge } from './ui/badge';
 import { motion } from 'motion/react';
-import { FileText, Download, Eye, Upload, CheckCircle } from 'lucide-react';
+import { FileText, Eye, Upload, CheckCircle, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   Dialog,
@@ -29,12 +28,14 @@ const documentTypes: KYCDocument[] = [
 ];
 
 export default function KYCDocuments() {
-  const { user } = useAuth();
+  const { user, refreshUser } = useAuth();
   const [documents, setDocuments] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [selectedDoc, setSelectedDoc] = useState<string | null>(null);
   const [documentUrl, setDocumentUrl] = useState<string | null>(null);
   const [uploading, setUploading] = useState<string | null>(null);
+  const [confirmReplaceDoc, setConfirmReplaceDoc] = useState<string | null>(null);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
 
   useEffect(() => {
     fetchDocuments();
@@ -82,6 +83,19 @@ export default function KYCDocuments() {
       return;
     }
 
+    // Show confirmation dialog before replacing
+    setPendingFile(file);
+    setConfirmReplaceDoc(docType);
+    e.target.value = '';
+  };
+
+  const confirmAndUpload = async () => {
+    if (!pendingFile || !confirmReplaceDoc) return;
+    const docType = confirmReplaceDoc;
+    const file = pendingFile;
+
+    setConfirmReplaceDoc(null);
+    setPendingFile(null);
     setUploading(docType);
 
     try {
@@ -99,15 +113,15 @@ export default function KYCDocuments() {
           }),
         });
 
-        toast.success(`${documentTypes.find(d => d.type === docType)?.label} updated successfully!`);
+        toast.success(`${documentTypes.find(d => d.type === docType)?.label} updated. KYC sent for re-approval.`);
         fetchDocuments();
-        e.target.value = '';
+        // Refresh user so kycStatus updates in sidebar/app
+        await refreshUser();
       };
 
       reader.readAsDataURL(file);
     } catch (error: any) {
       toast.error(error.message || 'Upload failed');
-      e.target.value = '';
     } finally {
       setUploading(null);
     }
@@ -228,12 +242,46 @@ export default function KYCDocuments() {
             <div>
               <h3 className="font-semibold text-lg mb-2">KYC Approved ✓</h3>
               <p className="text-sm text-muted-foreground">
-                Your KYC has been approved! You now have full access to all features. You can view your documents above and replace them if needed.
+                Your KYC has been approved! You can view your documents above. If you replace any document, your KYC will be sent for re-approval by admin.
               </p>
             </div>
           </div>
         </Card>
+
+        {/* Warning about re-approval */}
+        <div className="flex items-start gap-3 p-4 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700 rounded-lg">
+          <AlertTriangle className="w-5 h-5 text-yellow-600 flex-shrink-0 mt-0.5" />
+          <p className="text-sm text-yellow-700 dark:text-yellow-400">
+            <strong>Note:</strong> Replacing any document will reset your KYC status and require admin re-approval before you regain full access.
+          </p>
+        </div>
       </div>
+
+      {/* Confirm Replace Dialog */}
+      <Dialog open={!!confirmReplaceDoc} onOpenChange={() => { setConfirmReplaceDoc(null); setPendingFile(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="w-5 h-5 text-yellow-600" />
+              Replace Document?
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <p className="text-sm text-muted-foreground">
+              Replacing <strong>{documentTypes.find(d => d.type === confirmReplaceDoc)?.label}</strong> will reset your KYC status to <strong>pending re-approval</strong>. Admin will need to review and approve your documents again.
+            </p>
+            <p className="text-sm text-muted-foreground">Are you sure you want to continue?</p>
+            <div className="flex gap-3">
+              <Button variant="outline" className="flex-1" onClick={() => { setConfirmReplaceDoc(null); setPendingFile(null); }}>
+                Cancel
+              </Button>
+              <Button className="flex-1" onClick={confirmAndUpload}>
+                Yes, Replace
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Document Viewer Dialog */}
       <Dialog open={!!selectedDoc} onOpenChange={() => setSelectedDoc(null)}>

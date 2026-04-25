@@ -235,7 +235,7 @@ export default function AdminAnnouncements() {
                               {ann.createdAt ? format(new Date(ann.createdAt), 'MMM dd, yyyy HH:mm') : ''}
                             </span>
                           </div>
-                          <h3 className="font-semibold mb-1">{ann.title}</h3>
+                          <h3 className="font-semibold mb-1 text-foreground">{ann.title}</h3>
                           <p className="text-sm text-muted-foreground">{ann.message}</p>
                           <p className="text-xs text-muted-foreground mt-2">Posted by {ann.createdByName}</p>
                         </div>
