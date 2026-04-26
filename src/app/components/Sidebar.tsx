@@ -19,6 +19,7 @@ import {
   ClipboardList,
   Sun,
   Moon,
+  MapPin,
 } from 'lucide-react';
 import {
   Dialog,
@@ -46,6 +47,7 @@ export default function Sidebar({ currentPage, onNavigate }: SidebarProps) {
   const userMenuItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'kyc', label: 'KYC Upload', icon: Upload },
+    { id: 'plot-info', label: 'Plot Information', icon: MapPin },
   ];
 
   const adminMenuItems = [
@@ -54,6 +56,7 @@ export default function Sidebar({ currentPage, onNavigate }: SidebarProps) {
     { id: 'admin-payments', label: 'Payments', icon: DollarSign },
     { id: 'admin-users', label: 'Users', icon: Users },
     { id: 'admin-announcements', label: 'Announcements', icon: Megaphone },
+    { id: 'admin-plots', label: 'Plot Information', icon: MapPin },
     { id: 'admin-audit', label: 'Audit Log', icon: ClipboardList },
   ];
 

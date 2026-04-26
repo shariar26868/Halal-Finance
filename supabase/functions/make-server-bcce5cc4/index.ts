@@ -1187,6 +1187,190 @@ app.delete("/admin/users/:userId", async (c) => {
   }
 });
 
+// ========== PLOT INFORMATION ENDPOINTS ==========
+
+// User: Submit a plot post
+app.post("/plots/submit", async (c) => {
+  try {
+    const { user, error } = await verifyAuth(c.req.header('Authorization') || null);
+    if (error || !user) return c.json({ error: error || 'Unauthorized' }, 401);
+
+    const body = await c.req.json();
+    const { title, description, location, area, price, contactNumber, link, videoData, videoFileName, videoFileType } = body;
+
+    if (!title || !description || !location) {
+      return c.json({ error: 'Missing required fields: title, description, location' }, 400);
+    }
+
+    // Upload video if provided
+    let videoPath: string | null = null;
+    if (videoData && videoFileName) {
+      try {
+        const supabase = getServiceClient();
+        const bucketName = 'make-bcce5cc4-kyc-documents';
+        const fileBuffer = Uint8Array.from(atob(videoData), (c) => c.charCodeAt(0));
+        const sanitizedName = videoFileName.replace(/[^a-zA-Z0-9._-]/g, '_').substring(0, 100);
+        videoPath = `${user.id}/plots/${Date.now()}_${sanitizedName}`;
+        const { error: uploadError } = await supabase.storage
+          .from(bucketName)
+          .upload(videoPath, fileBuffer, {
+            contentType: videoFileType || 'video/mp4',
+            upsert: false,
+          });
+        if (uploadError) {
+          console.log(`Video upload error: ${uploadError.message}`);
+          videoPath = null;
+        }
+      } catch (e: any) {
+        console.log(`Video upload failed: ${e.message}`);
+      }
+    }
+
+    const userProfile = await kv.get(`user:${user.id}`);
+    const plotId = `plot:${Date.now()}:${user.id}`;
+    const plot = {
+      id: plotId,
+      userId: user.id,
+      userName: userProfile?.name || 'Unknown',
+      userEmail: userProfile?.email || '',
+      title,
+      description,
+      location,
+      area: area || '',
+      price: price || '',
+      contactNumber: contactNumber || '',
+      link: link || '',
+      videoPath: videoPath || null,
+      status: 'pending', // admin reviews before showing
+      createdAt: new Date().toISOString(),
+    };
+
+    await kv.set(plotId, plot);
+
+    return c.json({ message: 'Plot information submitted for review', plot });
+  } catch (error) {
+    return c.json({ error: `Failed: ${error.message}` }, 500);
+  }
+});
+
+// Get all approved plots (all authenticated users can see)
+app.get("/plots", async (c) => {
+  try {
+    const { user, error } = await verifyAuth(c.req.header('Authorization') || null);
+    if (error || !user) return c.json({ error: error || 'Unauthorized' }, 401);
+
+    const all = await kv.getByPrefix('plot:');
+    const approved = all
+      .filter((p: any) => p.status === 'approved')
+      .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    return c.json({ plots: approved });
+  } catch (error) {
+    return c.json({ error: `Failed: ${error.message}` }, 500);
+  }
+});
+
+// Admin: Get all plots (pending + approved + rejected)
+app.get("/admin/plots", async (c) => {
+  try {
+    const { user, error } = await verifyAuth(c.req.header('Authorization') || null);
+    if (error || !user) return c.json({ error: error || 'Unauthorized' }, 401);
+
+    const userProfile = await kv.get(`user:${user.id}`);
+    if (userProfile?.role !== 'admin') return c.json({ error: 'Forbidden' }, 403);
+
+    const all = await kv.getByPrefix('plot:');
+    const sorted = all.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    return c.json({ plots: sorted });
+  } catch (error) {
+    return c.json({ error: `Failed: ${error.message}` }, 500);
+  }
+});
+
+// Admin: Approve or reject a plot
+app.put("/admin/plots/:plotId", async (c) => {
+  try {
+    const { user, error } = await verifyAuth(c.req.header('Authorization') || null);
+    if (error || !user) return c.json({ error: error || 'Unauthorized' }, 401);
+
+    const userProfile = await kv.get(`user:${user.id}`);
+    if (userProfile?.role !== 'admin') return c.json({ error: 'Forbidden' }, 403);
+
+    const plotId = decodeURIComponent(c.req.param('plotId'));
+    const plot = await kv.get(plotId);
+    if (!plot) return c.json({ error: 'Plot not found' }, 404);
+
+    const body = await c.req.json();
+    const { status, adminNote } = body;
+
+    if (!['approved', 'rejected'].includes(status)) {
+      return c.json({ error: 'Status must be approved or rejected' }, 400);
+    }
+
+    plot.status = status;
+    plot.adminNote = adminNote || '';
+    plot.reviewedBy = user.id;
+    plot.reviewedAt = new Date().toISOString();
+
+    await kv.set(plotId, plot);
+
+    // Audit log
+    await kv.set(`audit:${Date.now()}`, {
+      action: `plot_${status}`,
+      performedBy: user.id,
+      performedByName: userProfile.name || 'Admin',
+      details: `Plot "${plot.title}" by ${plot.userName} ${status}`,
+      timestamp: new Date().toISOString(),
+    });
+
+    return c.json({ message: `Plot ${status}`, plot });
+  } catch (error) {
+    return c.json({ error: `Failed: ${error.message}` }, 500);
+  }
+});
+
+// Admin: Delete a plot
+app.delete("/admin/plots/:plotId", async (c) => {
+  try {
+    const { user, error } = await verifyAuth(c.req.header('Authorization') || null);
+    if (error || !user) return c.json({ error: error || 'Unauthorized' }, 401);
+
+    const userProfile = await kv.get(`user:${user.id}`);
+    if (userProfile?.role !== 'admin') return c.json({ error: 'Forbidden' }, 403);
+
+    const plotId = decodeURIComponent(c.req.param('plotId'));
+    await kv.del(plotId);
+
+    return c.json({ message: 'Plot deleted' });
+  } catch (error) {
+    return c.json({ error: `Failed: ${error.message}` }, 500);
+  }
+});
+
+// Get signed URL for plot video
+app.get("/plots/video/:plotId", async (c) => {
+  try {
+    const { user, error } = await verifyAuth(c.req.header('Authorization') || null);
+    if (error || !user) return c.json({ error: error || 'Unauthorized' }, 401);
+
+    const plotId = decodeURIComponent(c.req.param('plotId'));
+    const plot = await kv.get(plotId);
+    if (!plot || !plot.videoPath) return c.json({ error: 'Video not found' }, 404);
+
+    const supabase = getServiceClient();
+    const { data, error: signError } = await supabase.storage
+      .from('make-bcce5cc4-kyc-documents')
+      .createSignedUrl(plot.videoPath, 3600);
+
+    if (signError) return c.json({ error: 'Failed to generate URL' }, 500);
+
+    return c.json({ url: data.signedUrl });
+  } catch (error) {
+    return c.json({ error: `Failed: ${error.message}` }, 500);
+  }
+});
+
 // ========== ANNOUNCEMENTS ENDPOINTS ==========
 
 // Admin: Create announcement

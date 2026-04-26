@@ -12,6 +12,8 @@ import AdminUsers from './components/AdminUsers';
 import AdminKYC from './components/AdminKYC';
 import AdminAnnouncements from './components/AdminAnnouncements';
 import AdminAuditLog from './components/AdminAuditLog';
+import AdminPlots from './components/AdminPlots';
+import PlotInformation from './components/PlotInformation';
 import ResetPassword from './components/ResetPassword';
 import Sidebar from './components/Sidebar';
 
@@ -56,6 +58,8 @@ function AppContent() {
           return <AdminUsers />;
         case 'admin-announcements':
           return <AdminAnnouncements />;
+        case 'admin-plots':
+          return <AdminPlots />;
         case 'admin-audit':
           return <AdminAuditLog />;
         default:
@@ -66,8 +70,9 @@ function AppContent() {
         case 'dashboard':
           return <UserDashboard />;
         case 'kyc':
-          // Show KYCDocuments if approved, otherwise show KYCUpload
           return user.kycStatus === 'approved' ? <KYCDocuments /> : <KYCUpload />;
+        case 'plot-info':
+          return <PlotInformation />;
         default:
           return <UserDashboard />;
       }
