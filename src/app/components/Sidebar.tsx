@@ -184,6 +184,9 @@ export default function Sidebar({ currentPage, onNavigate }: SidebarProps) {
           <LogOut className="w-5 h-5" />
           Sign Out
         </Button>
+        <p className="text-center text-sidebar-foreground/40 text-sm pt-1">
+          © Built by <span className="text-sidebar-foreground/70 font-semibold">Shaikat</span>
+        </p>
       </div>
 
       <Dialog open={showChangePassword} onOpenChange={setShowChangePassword}>

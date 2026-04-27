@@ -3,28 +3,20 @@ import { useAuth } from '../context/AuthContext';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Card } from './ui/card';
 import GeometricPattern from './GeometricPattern';
 import { motion } from 'motion/react';
-import { Wallet, Lock, Mail, Phone, User, ArrowLeft } from 'lucide-react';
+import { Wallet, Lock, Mail, ArrowLeft } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiCall } from '../../utils/supabase';
 
 export default function LoginPage() {
-  const { login, signup } = useAuth();
+  const { login } = useAuth();
   const [loading, setLoading] = useState(false);
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [forgotEmail, setForgotEmail] = useState('');
   const [forgotSent, setForgotSent] = useState(false);
-
   const [loginData, setLoginData] = useState({ email: '', password: '' });
-  const [signupData, setSignupData] = useState({
-    email: '',
-    password: '',
-    name: '',
-    phone: '',
-  });
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -34,20 +26,6 @@ export default function LoginPage() {
       toast.success('Welcome back!');
     } catch (error: any) {
       toast.error(error.message || 'Login failed');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleSignup = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    try {
-      await signup(signupData);
-      toast.success('Account created! Please log in.');
-      setSignupData({ email: '', password: '', name: '', phone: '' });
-    } catch (error: any) {
-      toast.error(error.message || 'Signup failed');
     } finally {
       setLoading(false);
     }
@@ -76,7 +54,7 @@ export default function LoginPage() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#0d6e4f] via-[#0a5740] to-[#074432] relative flex items-center justify-center p-4 overflow-hidden">
       {/* Background castle image */}
-      <div 
+      <div
         className="absolute inset-0 opacity-35 bg-cover bg-center"
         style={{
           backgroundImage: `url('/wizarding-world-of-harry-potter-design-07.webp')`,
@@ -84,10 +62,10 @@ export default function LoginPage() {
           backgroundAttachment: 'fixed',
         }}
       />
-      
-      {/* Overlay for better text readability */}
+
+      {/* Overlay */}
       <div className="absolute inset-0 bg-gradient-to-r from-[#0d6e4f]/70 via-[#0a5740]/50 to-[#074432]/70" />
-      
+
       <GeometricPattern />
 
       <motion.div
@@ -96,6 +74,7 @@ export default function LoginPage() {
         transition={{ duration: 0.6 }}
         className="w-full max-w-5xl grid md:grid-cols-2 gap-8 items-center relative z-10"
       >
+        {/* Left side — branding */}
         <motion.div
           initial={{ opacity: 0, x: -30 }}
           animate={{ opacity: 1, x: 0 }}
@@ -113,8 +92,7 @@ export default function LoginPage() {
           </h1>
 
           <p className="text-lg text-white/80 leading-relaxed">
-            Secure payment tracking, KYC management, and comprehensive financial oversight built on Islamic
-            principles.
+            Secure payment tracking, KYC management, and comprehensive financial oversight built on Islamic principles.
           </p>
 
           <div className="flex gap-4 pt-4">
@@ -129,12 +107,13 @@ export default function LoginPage() {
           </div>
         </motion.div>
 
+        {/* Right side — login card */}
         <motion.div
           initial={{ opacity: 0, x: 30 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ duration: 0.7, delay: 0.3 }}
         >
-          <Card className="p-8 shadow-2xl border-0 bg-white/95 backdrop-blur">
+          <Card className="p-8 shadow-2xl border-0 bg-white backdrop-blur" style={{ colorScheme: 'light' }}>
             {showForgotPassword ? (
               <div className="space-y-5">
                 <div className="flex items-center gap-3 mb-2">
@@ -156,7 +135,7 @@ export default function LoginPage() {
                     </div>
                     <h3 className="font-semibold text-lg">Check your email</h3>
                     <p className="text-sm text-muted-foreground">
-                      We sent a password reset link to <strong>{forgotEmail}</strong>. Click the link in the email to reset your password.
+                      We sent a password reset link to <strong>{forgotEmail}</strong>.
                     </p>
                     <Button
                       variant="outline"
@@ -169,7 +148,7 @@ export default function LoginPage() {
                 ) : (
                   <form onSubmit={handleForgotPassword} className="space-y-5">
                     <p className="text-sm text-muted-foreground">
-                      Enter your email address and we'll send you a link to reset your password.
+                      Enter your email and we'll send you a reset link.
                     </p>
                     <div className="space-y-2">
                       <Label htmlFor="forgot-email">Email Address</Label>
@@ -193,13 +172,10 @@ export default function LoginPage() {
                 )}
               </div>
             ) : (
-            <Tabs defaultValue="login" className="w-full">
-              <TabsList className="grid w-full grid-cols-2 mb-6">
-                <TabsTrigger value="login">Log In</TabsTrigger>
-                <TabsTrigger value="signup">Sign Up</TabsTrigger>
-              </TabsList>
-
-              <TabsContent value="login">
+              <div className="space-y-2">
+                <h2 className="text-2xl font-bold mb-6" style={{ fontFamily: 'var(--font-heading)' }}>
+                  Sign In
+                </h2>
                 <form onSubmit={handleLogin} className="space-y-5">
                   <div className="space-y-2">
                     <Label htmlFor="login-email">Email Address</Label>
@@ -223,7 +199,7 @@ export default function LoginPage() {
                       <button
                         type="button"
                         onClick={() => setShowForgotPassword(true)}
-                        className="text-xs text-primary hover:underline"
+                        className="text-xs text-[#0d6e4f] hover:underline font-medium"
                       >
                         Forgot password?
                       </button>
@@ -246,82 +222,18 @@ export default function LoginPage() {
                     {loading ? 'Signing in...' : 'Sign In'}
                   </Button>
                 </form>
-              </TabsContent>
-
-              <TabsContent value="signup">
-                <form onSubmit={handleSignup} className="space-y-5">
-                  <div className="space-y-2">
-                    <Label htmlFor="signup-name">Full Name</Label>
-                    <div className="relative">
-                      <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                      <Input
-                        id="signup-name"
-                        placeholder="Your full name"
-                        className="pl-10"
-                        value={signupData.name}
-                        onChange={(e) => setSignupData({ ...signupData, name: e.target.value })}
-                        required
-                      />
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="signup-phone">Phone Number</Label>
-                    <div className="relative">
-                      <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                      <Input
-                        id="signup-phone"
-                        placeholder="017XX-XXXXXX"
-                        className="pl-10"
-                        value={signupData.phone}
-                        onChange={(e) => setSignupData({ ...signupData, phone: e.target.value })}
-                        required
-                      />
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="signup-email">Email Address</Label>
-                    <div className="relative">
-                      <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                      <Input
-                        id="signup-email"
-                        type="email"
-                        placeholder="your@email.com"
-                        className="pl-10"
-                        value={signupData.email}
-                        onChange={(e) => setSignupData({ ...signupData, email: e.target.value })}
-                        required
-                      />
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="signup-password">Password</Label>
-                    <div className="relative">
-                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                      <Input
-                        id="signup-password"
-                        type="password"
-                        placeholder="Create a password"
-                        className="pl-10"
-                        value={signupData.password}
-                        onChange={(e) => setSignupData({ ...signupData, password: e.target.value })}
-                        required
-                      />
-                    </div>
-                  </div>
-
-                  <Button type="submit" className="w-full" size="lg" disabled={loading}>
-                    {loading ? 'Creating account...' : 'Create Account'}
-                  </Button>
-                </form>
-              </TabsContent>
-            </Tabs>
+              </div>
             )}
           </Card>
         </motion.div>
       </motion.div>
+
+      {/* Built by credit */}
+      <div className="absolute bottom-4 left-0 right-0 text-center z-10">
+        <p className="text-white/50 text-sm">
+          © Built by <span className="text-white/80 font-semibold">Shaikat</span>
+        </p>
+      </div>
     </div>
   );
 }
