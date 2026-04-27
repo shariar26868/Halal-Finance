@@ -113,7 +113,7 @@ export default function LoginPage() {
           animate={{ opacity: 1, x: 0 }}
           transition={{ duration: 0.7, delay: 0.3 }}
         >
-          <Card className="p-8 shadow-2xl border-0 bg-white backdrop-blur" style={{ colorScheme: 'light' }}>
+          <Card className="p-8 shadow-2xl border-0 bg-white backdrop-blur" style={{ colorScheme: 'light', color: '#111' }}>
             {showForgotPassword ? (
               <div className="space-y-5">
                 <div className="flex items-center gap-3 mb-2">
@@ -173,19 +173,19 @@ export default function LoginPage() {
               </div>
             ) : (
               <div className="space-y-2">
-                <h2 className="text-2xl font-bold mb-6" style={{ fontFamily: 'var(--font-heading)' }}>
+                <h2 className="text-2xl font-bold mb-6 text-gray-900" style={{ fontFamily: 'var(--font-heading)' }}>
                   Sign In
                 </h2>
                 <form onSubmit={handleLogin} className="space-y-5">
                   <div className="space-y-2">
-                    <Label htmlFor="login-email">Email Address</Label>
+                    <Label htmlFor="login-email" className="text-gray-700">Email Address</Label>
                     <div className="relative">
-                      <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                      <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
                       <Input
                         id="login-email"
                         type="email"
                         placeholder="your@email.com"
-                        className="pl-10"
+                        className="pl-10 bg-white border-gray-300 text-gray-900 placeholder:text-gray-400"
                         value={loginData.email}
                         onChange={(e) => setLoginData({ ...loginData, email: e.target.value })}
                         required
@@ -195,7 +195,7 @@ export default function LoginPage() {
 
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <Label htmlFor="login-password">Password</Label>
+                      <Label htmlFor="login-password" className="text-gray-700">Password</Label>
                       <button
                         type="button"
                         onClick={() => setShowForgotPassword(true)}
@@ -205,12 +205,12 @@ export default function LoginPage() {
                       </button>
                     </div>
                     <div className="relative">
-                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
                       <Input
                         id="login-password"
                         type="password"
                         placeholder="••••••••"
-                        className="pl-10"
+                        className="pl-10 bg-white border-gray-300 text-gray-900 placeholder:text-gray-400"
                         value={loginData.password}
                         onChange={(e) => setLoginData({ ...loginData, password: e.target.value })}
                         required
@@ -218,7 +218,7 @@ export default function LoginPage() {
                     </div>
                   </div>
 
-                  <Button type="submit" className="w-full" size="lg" disabled={loading}>
+                  <Button type="submit" className="w-full bg-[#0d6e4f] hover:bg-[#0a5740] text-white" size="lg" disabled={loading}>
                     {loading ? 'Signing in...' : 'Sign In'}
                   </Button>
                 </form>
