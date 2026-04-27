@@ -231,7 +231,7 @@ export default function LoginPage() {
       {/* Built by credit */}
       <div className="absolute bottom-4 left-0 right-0 text-center z-10">
         <p className="text-white/50 text-sm">
-          © Built by <span className="text-white/80 font-semibold">Shaikat</span>
+          © Built by <span className="text-white/100 font-semibold">Md.Shariar Emon Shaikat</span>
         </p>
       </div>
     </div>
