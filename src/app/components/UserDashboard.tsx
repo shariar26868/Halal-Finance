@@ -16,10 +16,11 @@ import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { motion } from 'motion/react';
-import { Wallet, Plus, CheckCircle2, Clock, XCircle, Calendar, CreditCard, FileText, Megaphone, AlertCircle, Upload, Image, Eye } from 'lucide-react';
+import { Wallet, Plus, CheckCircle2, Clock, XCircle, Calendar, CreditCard, FileText, Megaphone, AlertCircle, Upload, Image, Eye, TrendingUp, BookOpen } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { BANKS, PAYMENT_METHODS } from '../constants/banks';
+import AccountStatement from './AccountStatement';
 
 interface Payment {
   id: string;
@@ -48,9 +49,11 @@ export default function UserDashboard() {
   const { user } = useAuth();
   const [payments, setPayments] = useState<Payment[]>([]);
   const [totalPaid, setTotalPaid] = useState(0);
+  const [totalLateFees, setTotalLateFees] = useState(0);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+  const [activeTab, setActiveTab] = useState<'payments' | 'statement'>('payments');
   const [screenshotFile, setScreenshotFile] = useState<File | null>(null);
   const [screenshotPreview, setScreenshotPreview] = useState<string | null>(null);
   const [viewingScreenshot, setViewingScreenshot] = useState<string | null>(null);
@@ -101,6 +104,7 @@ export default function UserDashboard() {
       console.log('Payments fetched:', data);
       setPayments(data.payments || []);
       setTotalPaid(data.totalPaid || 0);
+      setTotalLateFees(data.totalLateFees || 0);
     } catch (error: any) {
       console.error('Failed to load payments:', error);
       toast.error(`Failed to load payments: ${error.message}`);
@@ -296,7 +300,7 @@ export default function UserDashboard() {
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ duration: 0.5, delay: 0.1 }}
-          className="grid md:grid-cols-3 gap-6"
+          className="grid md:grid-cols-4 gap-6"
         >
           <Card className="p-6 border-2 border-primary/20 bg-gradient-to-br from-primary/5 to-primary/10">
             <div className="flex items-center justify-between mb-4">
@@ -328,6 +332,19 @@ export default function UserDashboard() {
             <p className="text-3xl font-bold">{payments.filter((p) => p.status === 'approved' && p.paidMonth !== 'extra').length}</p>
             <p className="text-sm text-muted-foreground mt-1">Approved Payments</p>
           </Card>
+
+          {/* Shares card */}
+          {(user as any)?.shares !== undefined && (
+            <Card className="p-6 border-accent/30 bg-accent/5">
+              <div className="flex items-center justify-between mb-4">
+                <div className="p-3 bg-accent/20 rounded-lg">
+                  <TrendingUp className="w-6 h-6 text-accent-foreground" />
+                </div>
+              </div>
+              <p className="text-3xl font-bold">{(user as any).shares || 0}</p>
+              <p className="text-sm text-muted-foreground mt-1">My Shares</p>
+            </Card>
+          )}
         </motion.div>
 
         {/* Extra amount card */}
@@ -356,9 +373,26 @@ export default function UserDashboard() {
         >
           <Card className="p-6">
             <div className="flex items-center justify-between mb-6">
-              <h2 className="text-2xl font-semibold" style={{ fontFamily: 'var(--font-heading)' }}>
-                Payment History
-              </h2>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setActiveTab('payments')}
+                  className={`text-xl font-semibold pb-1 border-b-2 transition-colors ${activeTab === 'payments' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+                  style={{ fontFamily: 'var(--font-heading)' }}
+                >
+                  Payment History
+                </button>
+                <button
+                  onClick={() => setActiveTab('statement')}
+                  className={`text-xl font-semibold pb-1 border-b-2 transition-colors flex items-center gap-1 ${activeTab === 'statement' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+                  style={{ fontFamily: 'var(--font-heading)' }}
+                >
+                  <BookOpen className="w-4 h-4" />
+                  Account Statement
+                  {totalLateFees > 0 && (
+                    <span className="ml-1 px-1.5 py-0.5 bg-destructive text-destructive-foreground text-xs rounded-full">!</span>
+                  )}
+                </button>
+              </div>
               <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
                 <DialogTrigger asChild>
                   <Button className="gap-2">
@@ -519,7 +553,9 @@ export default function UserDashboard() {
             </div>
 
             <div className="space-y-3">
-              {payments.length === 0 ? (
+              {activeTab === 'statement' ? (
+                <AccountStatement />
+              ) : payments.length === 0 ? (
                 <div className="text-center py-12 text-muted-foreground">
                   <FileText className="w-12 h-12 mx-auto mb-3 opacity-50" />
                   <p>No payments yet. Submit your first payment above.</p>

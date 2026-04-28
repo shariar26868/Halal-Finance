@@ -659,6 +659,76 @@ app.post("/payments/submit", async (c) => {
   }
 });
 
+// ========== LATE FEE HELPER ==========
+
+const checkAndApplyLateFee = async (userId: string) => {
+  const LATE_FEE = 500;
+  const CONSECUTIVE_MONTHS_THRESHOLD = 2;
+
+  const userProfile = await kv.get(`user:${userId}`);
+  if (!userProfile || !userProfile.createdAt) return;
+
+  const allPayments = await kv.getByPrefix(`payment:${userId}:`);
+  const approvedMonths = new Set(
+    allPayments
+      .filter((p: any) => p.status === 'approved' && p.paidMonth && p.paidMonth !== 'extra')
+      .map((p: any) => p.paidMonth)
+  );
+
+  // Build list of months from joining to now
+  const joinDate = new Date(userProfile.createdAt);
+  const now = new Date();
+  const months: string[] = [];
+  const cur = new Date(joinDate.getFullYear(), joinDate.getMonth(), 1);
+  while (cur <= now) {
+    months.push(`${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, '0')}`);
+    cur.setMonth(cur.getMonth() + 1);
+  }
+
+  // Find consecutive missed streaks of 2+
+  let consecutiveMissed = 0;
+  let streakStart: string | null = null;
+
+  for (const month of months) {
+    if (!approvedMonths.has(month)) {
+      if (consecutiveMissed === 0) streakStart = month;
+      consecutiveMissed++;
+    } else {
+      consecutiveMissed = 0;
+      streakStart = null;
+    }
+
+    // When we hit exactly 2 consecutive missed months, apply fee if not already applied
+    if (consecutiveMissed === CONSECUTIVE_MONTHS_THRESHOLD && streakStart) {
+      const feeKey = `latefee:${userId}:${streakStart}`;
+      const existing = await kv.get(feeKey);
+      if (!existing) {
+        // Create late fee charge
+        const chargeId = `payment:${userId}:latefee:${Date.now()}`;
+        const charge = {
+          id: chargeId,
+          userId,
+          paymentDate: now.toISOString().split('T')[0],
+          dateOfEntry: now.toISOString(),
+          paidFrom: 'system',
+          transactionId: `LATEFEE-${streakStart}`,
+          paidMonth: `late-fee:${streakStart}`,
+          paidAmount: LATE_FEE,
+          status: 'approved',
+          createdBy: 'system',
+          createdAt: now.toISOString(),
+          isLateFee: true,
+          lateFeeFor: streakStart,
+          note: `Late fee: 2 consecutive months missed starting ${streakStart}`,
+        };
+        await kv.set(chargeId, charge);
+        await kv.set(feeKey, { applied: true, chargeId, appliedAt: now.toISOString() });
+        console.log(`Late fee applied for user ${userId}, streak starting ${streakStart}`);
+      }
+    }
+  }
+};
+
 // Get user's payment history
 app.get("/payments/user", async (c) => {
   try {
@@ -668,22 +738,90 @@ app.get("/payments/user", async (c) => {
       return c.json({ error: error || 'Unauthorized' }, 401);
     }
 
+    // Auto-check and apply late fees on every dashboard load
+    await checkAndApplyLateFee(user.id);
+
     const allPayments = await kv.getByPrefix(`payment:${user.id}:`);
     const sortedPayments = allPayments.sort((a, b) =>
       new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
 
     const totalPaid = allPayments
-      .filter(p => p.status === 'approved')
+      .filter(p => p.status === 'approved' && !p.isLateFee && p.paidMonth !== 'extra')
+      .reduce((sum, p) => sum + p.paidAmount, 0);
+
+    const totalLateFees = allPayments
+      .filter(p => p.isLateFee && p.status === 'approved')
       .reduce((sum, p) => sum + p.paidAmount, 0);
 
     return c.json({
       payments: sortedPayments,
-      totalPaid
+      totalPaid,
+      totalLateFees,
     });
   } catch (error) {
     console.log(`Payment retrieval error: ${error.message}`);
     return c.json({ error: 'Payment retrieval failed' }, 500);
+  }
+});
+
+// Get user account statement (full financial transparency)
+app.get("/account/statement", async (c) => {
+  try {
+    const { user, error } = await verifyAuth(c.req.header('Authorization') || null);
+    if (error || !user) return c.json({ error: error || 'Unauthorized' }, 401);
+
+    await checkAndApplyLateFee(user.id);
+
+    const userProfile = await kv.get(`user:${user.id}`);
+    const allPayments = await kv.getByPrefix(`payment:${user.id}:`);
+
+    const regularPayments = allPayments.filter((p: any) => !p.isLateFee && p.paidMonth !== 'extra' && p.status === 'approved');
+    const extraPayments = allPayments.filter((p: any) => p.paidMonth === 'extra' && p.status === 'approved');
+    const lateFees = allPayments.filter((p: any) => p.isLateFee && p.status === 'approved');
+    const pendingPayments = allPayments.filter((p: any) => p.status === 'pending' && !p.isLateFee);
+
+    const totalPaid = regularPayments.reduce((s: number, p: any) => s + p.paidAmount, 0);
+    const totalExtra = extraPayments.reduce((s: number, p: any) => s + p.paidAmount, 0);
+    const totalLateFees = lateFees.reduce((s: number, p: any) => s + p.paidAmount, 0);
+    const totalTarget = userProfile?.totalTarget || 0;
+    const remainingDue = Math.max(0, totalTarget - totalPaid);
+
+    // Build full ledger sorted by date
+    const ledger = allPayments
+      .filter((p: any) => p.status === 'approved' || p.status === 'pending')
+      .map((p: any) => ({
+        id: p.id,
+        date: p.dateOfEntry || p.createdAt,
+        type: p.isLateFee ? 'late_fee' : p.paidMonth === 'extra' ? 'extra' : p.status === 'pending' ? 'pending' : 'payment',
+        description: p.isLateFee
+          ? `Late fee — missed 2 months from ${p.lateFeeFor}`
+          : p.paidMonth === 'extra'
+          ? 'Extra amount'
+          : p.status === 'pending'
+          ? `Payment for ${p.paidMonth} (pending)`
+          : `Payment for ${p.paidMonth}`,
+        amount: p.paidAmount,
+        status: p.status,
+        paidFrom: p.paidFrom,
+      }))
+      .sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    return c.json({
+      summary: {
+        totalPaid,
+        totalExtra,
+        totalLateFees,
+        totalTarget,
+        remainingDue,
+        monthlyInstallment: userProfile?.monthlyInstallment || 5000,
+        monthsPaid: regularPayments.length,
+        pendingCount: pendingPayments.length,
+      },
+      ledger,
+    });
+  } catch (error) {
+    return c.json({ error: `Failed: ${error.message}` }, 500);
   }
 });
 
@@ -1111,7 +1249,7 @@ app.post("/admin/users/create", async (c) => {
     }
 
     const body = await c.req.json();
-    const { email, password, name, phone, role = 'user' } = body;
+    const { email, password, name, phone, role = 'user', shares = 0, monthlyInstallment = 5000, totalTarget = 0 } = body;
 
     if (!email || !password || !name || !phone) {
       return c.json({ error: 'Missing required fields: email, password, name, phone' }, 400);
@@ -1137,6 +1275,9 @@ app.post("/admin/users/create", async (c) => {
       name,
       phone,
       role,
+      shares: parseInt(shares) || 0,
+      monthlyInstallment: parseFloat(monthlyInstallment) || 5000,
+      totalTarget: parseFloat(totalTarget) || 0,
       createdAt: new Date().toISOString(),
       createdBy: user.id,
       kycStatus: 'pending'
@@ -1184,6 +1325,142 @@ app.delete("/admin/users/:userId", async (c) => {
   } catch (error) {
     console.log(`User deactivation error: ${error.message}`);
     return c.json({ error: 'User deactivation failed' }, 500);
+  }
+});
+
+// ========== USER ANALYTICS ENDPOINT ==========
+
+// Get analytics for a specific user (admin only)
+app.get("/admin/users/:userId/analytics", async (c) => {
+  try {
+    const { user, error } = await verifyAuth(c.req.header('Authorization') || null);
+    if (error || !user) return c.json({ error: error || 'Unauthorized' }, 401);
+
+    const userProfile = await kv.get(`user:${user.id}`);
+    if (userProfile?.role !== 'admin') return c.json({ error: 'Forbidden' }, 403);
+
+    const userId = c.req.param('userId');
+    const targetUser = await kv.get(`user:${userId}`);
+    if (!targetUser) return c.json({ error: 'User not found' }, 404);
+
+    // Get all payments for this user
+    const allPayments = await kv.getByPrefix(`payment:${userId}:`);
+    const approvedPayments = allPayments.filter((p: any) => p.status === 'approved' && p.paidMonth !== 'extra');
+    const pendingPayments = allPayments.filter((p: any) => p.status === 'pending');
+    const rejectedPayments = allPayments.filter((p: any) => p.status === 'rejected');
+    const extraPayments = allPayments.filter((p: any) => p.paidMonth === 'extra' && p.status === 'approved');
+
+    const totalPaid = approvedPayments.reduce((sum: number, p: any) => sum + p.paidAmount, 0);
+    const totalPending = pendingPayments.reduce((sum: number, p: any) => sum + p.paidAmount, 0);
+    const extraBalance = extraPayments.reduce((sum: number, p: any) => sum + p.paidAmount, 0);
+
+    // Contribution history sorted by month
+    const contributionHistory = approvedPayments
+      .sort((a: any, b: any) => a.paidMonth.localeCompare(b.paidMonth))
+      .map((p: any) => ({
+        month: p.paidMonth,
+        amount: p.paidAmount,
+        paidFrom: p.paidFrom,
+        date: p.paymentDate,
+      }));
+
+    // Calculate months paid and dues
+    const monthsPaid = approvedPayments.length;
+    const INSTALLMENT_RATE = targetUser.monthlyInstallment || 5000;
+    const TOTAL_TARGET = targetUser.totalTarget || 0;
+
+    // Find last paid month to determine dues
+    const sortedApproved = approvedPayments
+      .filter((p: any) => p.paidMonth && p.paidMonth !== 'extra')
+      .sort((a: any, b: any) => b.paidMonth.localeCompare(a.paidMonth));
+
+    const lastPaidMonth = sortedApproved.length > 0 ? sortedApproved[0].paidMonth : null;
+
+    // Due calculation:
+    // If totalTarget is set: due = totalTarget - totalPaid (capped at 0)
+    // Otherwise: fall back to months-based calculation
+    let dueAmount = 0;
+    let dueMonths = 0;
+    let remainingTarget = 0;
+
+    if (TOTAL_TARGET > 0) {
+      dueAmount = Math.max(0, TOTAL_TARGET - totalPaid);
+      remainingTarget = dueAmount;
+      dueMonths = dueAmount > 0 ? Math.ceil(dueAmount / INSTALLMENT_RATE) : 0;
+    } else {
+      // Fallback: months since joining
+      const joinDate = new Date(targetUser.createdAt);
+      const now = new Date();
+      const monthsSinceJoining = (now.getFullYear() - joinDate.getFullYear()) * 12 + (now.getMonth() - joinDate.getMonth());
+      dueMonths = Math.max(0, monthsSinceJoining - monthsPaid);
+      dueAmount = dueMonths * INSTALLMENT_RATE;
+      remainingTarget = dueAmount;
+    }
+
+    return c.json({
+      user: {
+        id: targetUser.id,
+        name: targetUser.name,
+        email: targetUser.email,
+        phone: targetUser.phone,
+        shares: targetUser.shares || 0,
+        monthlyInstallment: targetUser.monthlyInstallment || 5000,
+        totalTarget: targetUser.totalTarget || 0,
+        kycStatus: targetUser.kycStatus,
+        createdAt: targetUser.createdAt,
+      },
+      analytics: {
+        totalPaid,
+        totalPending,
+        extraBalance,
+        monthsPaid,
+        dueMonths,
+        dueAmount,
+        monthlyInstallment: INSTALLMENT_RATE,
+        totalTarget: TOTAL_TARGET,
+        remainingTarget,
+        lastPaidMonth,
+        totalPayments: allPayments.length,
+        approvedCount: approvedPayments.length,
+        pendingCount: pendingPayments.length,
+        rejectedCount: rejectedPayments.length,
+        contributionHistory,
+      }
+    });
+  } catch (error) {
+    return c.json({ error: `Failed: ${error.message}` }, 500);
+  }
+});
+
+// Admin: Update user shares
+app.patch("/admin/users/:userId/shares", async (c) => {
+  try {
+    const { user, error } = await verifyAuth(c.req.header('Authorization') || null);
+    if (error || !user) return c.json({ error: error || 'Unauthorized' }, 401);
+
+    const userProfile = await kv.get(`user:${user.id}`);
+    if (userProfile?.role !== 'admin') return c.json({ error: 'Forbidden' }, 403);
+
+    const userId = c.req.param('userId');
+    const targetUser = await kv.get(`user:${userId}`);
+    if (!targetUser) return c.json({ error: 'User not found' }, 404);
+
+    const body = await c.req.json();
+    const { shares, monthlyInstallment, totalTarget } = body;
+
+    targetUser.shares = parseInt(shares) || 0;
+    if (monthlyInstallment !== undefined) {
+      targetUser.monthlyInstallment = parseFloat(monthlyInstallment) || 5000;
+    }
+    if (totalTarget !== undefined) {
+      targetUser.totalTarget = parseFloat(totalTarget) || 0;
+    }
+    targetUser.updatedAt = new Date().toISOString();
+    await kv.set(`user:${userId}`, targetUser);
+
+    return c.json({ message: 'Updated', shares: targetUser.shares, monthlyInstallment: targetUser.monthlyInstallment, totalTarget: targetUser.totalTarget });
+  } catch (error) {
+    return c.json({ error: `Failed: ${error.message}` }, 500);
   }
 });
 
