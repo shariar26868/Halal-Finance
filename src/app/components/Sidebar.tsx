@@ -20,6 +20,7 @@ import {
   Sun,
   Moon,
   MapPin,
+  ChevronRight,
 } from 'lucide-react';
 import {
   Dialog,
@@ -91,104 +92,134 @@ export default function Sidebar({ currentPage, onNavigate }: SidebarProps) {
     }
   };
 
+  const isAdmin = user?.role === 'admin';
+
   return (
     <div className="w-64 h-screen bg-sidebar text-sidebar-foreground flex flex-col border-r border-sidebar-border sticky top-0">
-      <div className="p-6 border-b border-sidebar-border">
+
+      {/* ── Logo / Brand ── */}
+      <div className="px-5 py-5 border-b border-sidebar-border">
         <motion.div
           initial={{ opacity: 0, scale: 0.9 }}
           animate={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.5 }}
+          transition={{ duration: 0.4 }}
           className="flex items-center gap-3"
         >
-          <div className="w-10 h-10 rounded-lg bg-accent flex items-center justify-center">
-            <Wallet className="w-6 h-6 text-accent-foreground" />
+          <div className="w-9 h-9 rounded-xl bg-[#0d6e4f] flex items-center justify-center shadow-md flex-shrink-0">
+            <Wallet className="w-5 h-5 text-white" />
           </div>
           <div>
-            <h2 className="font-bold text-sm" style={{ fontFamily: 'var(--font-heading)' }}>
+            <p className="font-bold text-sm leading-tight tracking-tight text-white" style={{ fontFamily: 'var(--font-heading)' }}>
               Halal Finance
-            </h2>
-            <p className="text-xs text-sidebar-foreground/70">Software</p>
+            </p>
+            <p className="text-[11px] text-white/50 tracking-wide uppercase">
+              {isAdmin ? 'Admin Panel' : 'Member Portal'}
+            </p>
           </div>
         </motion.div>
       </div>
 
-      <div className="p-4 border-b border-sidebar-border">
-        <div className="flex items-center gap-3 p-3 rounded-lg bg-white/10 border border-white/15">
-          <div className="w-10 h-10 rounded-full bg-accent/30 border border-accent/50 flex items-center justify-center flex-shrink-0">
-            {user?.role === 'admin' ? (
-              <Shield className="w-5 h-5 text-accent" />
-            ) : (
-              <User className="w-5 h-5 text-accent" />
-            )}
+      {/* ── User Card ── */}
+      <div className="px-4 py-4 border-b border-sidebar-border">
+        <div className="flex items-center gap-3 px-3 py-3 rounded-xl bg-white/10 border border-white/15">
+          <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${
+            isAdmin
+              ? 'bg-amber-400/25 border border-amber-400/50'
+              : 'bg-white/20 border border-white/30'
+          }`}>
+            {isAdmin
+              ? <Shield className="w-4 h-4 text-amber-300" />
+              : <User className="w-4 h-4 text-white" />
+            }
           </div>
           <div className="flex-1 min-w-0">
-            <p className="font-semibold text-sm text-sidebar-foreground break-words leading-tight">
+            <p className="font-semibold text-sm text-white truncate leading-tight">
               {user?.name || 'Loading...'}
             </p>
-            <p className="text-xs text-sidebar-foreground/60 capitalize mt-0.5">
-              {user?.role || ''}
-            </p>
+            <span className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full mt-0.5 ${
+              isAdmin
+                ? 'bg-amber-400/25 text-amber-200'
+                : 'bg-white/20 text-white/80'
+            }`}>
+              {isAdmin ? '● Admin' : '● Member'}
+            </span>
           </div>
         </div>
       </div>
 
-      <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
-        {menuItems.map((item) => {
+      {/* ── Navigation ── */}
+      <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
+        <p className="text-[10px] font-semibold uppercase tracking-widest text-white/40 px-3 pb-2">
+          {isAdmin ? 'Management' : 'Navigation'}
+        </p>
+
+        {menuItems.map((item, index) => {
           const Icon = item.icon;
           const isActive = currentPage === item.id;
 
           return (
             <motion.button
               key={item.id}
-              whileHover={{ x: 4 }}
+              initial={{ opacity: 0, x: -8 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ duration: 0.25, delay: index * 0.04 }}
               whileTap={{ scale: 0.98 }}
               onClick={() => onNavigate(item.id)}
               className={`
-                w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition-all
-                ${
-                  isActive
-                    ? 'bg-sidebar-primary text-sidebar-primary-foreground font-medium shadow-sm'
-                    : 'text-sidebar-foreground hover:bg-sidebar-accent'
+                w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-all duration-150 group
+                ${isActive
+                  ? 'bg-white/20 text-white font-semibold shadow-sm'
+                  : 'text-white/70 hover:bg-white/10 hover:text-white'
                 }
               `}
             >
-              <Icon className="w-5 h-5 flex-shrink-0" />
-              <span>{item.label}</span>
+              <Icon className={`w-4 h-4 flex-shrink-0 transition-transform duration-150 ${isActive ? '' : 'group-hover:scale-110'}`} />
+              <span className="text-sm flex-1">{item.label}</span>
+              {isActive && <ChevronRight className="w-3.5 h-3.5 opacity-60" />}
             </motion.button>
           );
         })}
       </nav>
 
-      <div className="p-4 border-t border-sidebar-border space-y-2">
-        <Button
-          variant="ghost"
-          className="w-full justify-start gap-3 text-sidebar-foreground hover:bg-sidebar-accent"
+      {/* ── Footer Actions ── */}
+      <div className="px-3 py-4 border-t border-white/15 space-y-0.5">
+        <p className="text-[10px] font-semibold uppercase tracking-widest text-white/40 px-3 pb-2">
+          Settings
+        </p>
+
+        <button
           onClick={toggleTheme}
+          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-white/70 hover:bg-white/10 hover:text-white transition-all duration-150 group"
         >
-          {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+          {theme === 'dark'
+            ? <Sun className="w-4 h-4 flex-shrink-0 group-hover:scale-110 transition-transform" />
+            : <Moon className="w-4 h-4 flex-shrink-0 group-hover:scale-110 transition-transform" />
+          }
           {theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
-        </Button>
-        <Button
-          variant="ghost"
-          className="w-full justify-start gap-3 text-sidebar-foreground hover:bg-sidebar-accent"
+        </button>
+
+        <button
           onClick={() => setShowChangePassword(true)}
+          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-white/70 hover:bg-white/10 hover:text-white transition-all duration-150 group"
         >
-          <KeyRound className="w-5 h-5" />
+          <KeyRound className="w-4 h-4 flex-shrink-0 group-hover:scale-110 transition-transform" />
           Change Password
-        </Button>
-        <Button
-          variant="ghost"
-          className="w-full justify-start gap-3 text-sidebar-foreground hover:bg-sidebar-accent"
+        </button>
+
+        <button
           onClick={handleLogout}
+          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-red-300 hover:bg-red-500/15 hover:text-red-200 transition-all duration-150 group"
         >
-          <LogOut className="w-5 h-5" />
+          <LogOut className="w-4 h-4 flex-shrink-0 group-hover:scale-110 transition-transform" />
           Sign Out
-        </Button>
-        <p className="text-center text-sidebar-foreground/40 text-sm pt-1">
-          © Built by <span className="text-sidebar-foreground/70 font-semibold">Shaikat</span>
+        </button>
+
+        <p className="text-center text-white/30 text-[11px] pt-3 pb-1">
+          © Built by <span className="text-white/55 font-semibold">Shaikat</span>
         </p>
       </div>
 
+      {/* ── Change Password Dialog ── */}
       <Dialog open={showChangePassword} onOpenChange={setShowChangePassword}>
         <DialogContent>
           <DialogHeader>
