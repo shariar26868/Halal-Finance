@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { apiCall } from '../../utils/supabase';
+import { apiCall, fileToBase64 } from '../../utils/api';
 import { Button } from './ui/button';
 import { Card } from './ui/card';
 import { Badge } from './ui/badge';
@@ -85,26 +85,19 @@ export default function KYCDocuments() {
     setUploading(docType);
 
     try {
-      const reader = new FileReader();
-      reader.onload = async (event) => {
-        const base64Data = event.target?.result?.toString().split(',')[1];
-
-        await apiCall('/user/kyc/upload', {
-          method: 'POST',
-          body: JSON.stringify({
-            fileName: file.name,
-            fileData: base64Data,
-            fileType: file.type,
-            documentType: docType,
-          }),
-        });
-
-        toast.success(`${documentTypes.find(d => d.type === docType)?.label} updated successfully!`);
-        fetchDocuments();
-        e.target.value = '';
-      };
-
-      reader.readAsDataURL(file);
+      const base64Data = await fileToBase64(file);
+      await apiCall('/user/kyc/upload', {
+        method: 'POST',
+        body: JSON.stringify({
+          fileName: file.name,
+          fileData: base64Data,
+          fileType: file.type,
+          documentType: docType,
+        }),
+      });
+      toast.success(`${documentTypes.find(d => d.type === docType)?.label} updated successfully!`);
+      await fetchDocuments();
+      e.target.value = '';
     } catch (error: any) {
       toast.error(error.message || 'Upload failed');
       e.target.value = '';

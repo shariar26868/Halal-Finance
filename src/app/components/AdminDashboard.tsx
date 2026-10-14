@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { apiCall } from '../../utils/supabase';
+import { apiCall } from '../../utils/api';
 import { Card } from './ui/card';
 import { motion } from 'motion/react';
 import { DollarSign, TrendingUp, Clock, CheckCircle2, Users, Calendar } from 'lucide-react';

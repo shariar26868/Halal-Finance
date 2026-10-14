@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { apiCall } from '../../utils/supabase';
+import { apiCall } from '../../utils/api';
 
 interface User {
   id: string;

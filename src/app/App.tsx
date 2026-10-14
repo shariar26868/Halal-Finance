@@ -19,10 +19,7 @@ function AppContent() {
   const { user, loading } = useAuth();
   const [currentPage, setCurrentPage] = useState('dashboard');
 
-  // Handle password reset route - check URL path and hash for Supabase tokens
-  const isResetPasswordRoute =
-    window.location.pathname === '/reset-password' ||
-    window.location.hash.includes('type=recovery');
+  const isResetPasswordRoute = window.location.pathname === '/reset-password';
 
   if (isResetPasswordRoute) {
     return <ResetPassword />;

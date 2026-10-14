@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { apiCall } from '../../utils/supabase';
+import { apiCall, fileToBase64 } from '../../utils/api';
 import { Button } from './ui/button';
 import { Card } from './ui/card';
 import { Label } from './ui/label';
@@ -75,34 +75,24 @@ export default function KYCUpload() {
     setUploading(docType);
 
     try {
-      const reader = new FileReader();
-      reader.onload = async (event) => {
-        const base64Data = event.target?.result?.toString().split(',')[1];
+      const base64Data = await fileToBase64(file);
+      await apiCall('/user/kyc/upload', {
+        method: 'POST',
+        body: JSON.stringify({
+          fileName: file.name,
+          fileData: base64Data,
+          fileType: file.type,
+          documentType: docType,
+        }),
+      });
 
-        await apiCall('/user/kyc/upload', {
-          method: 'POST',
-          body: JSON.stringify({
-            fileName: file.name,
-            fileData: base64Data,
-            fileType: file.type,
-            documentType: docType,
-          }),
-        });
-
-        setUploadedDocs((prev) => ({ ...prev, [docType]: true }));
-        toast.success(`${documents.find((d) => d.type === docType)?.label} uploaded successfully! ✓`);
-        
-        // Store file info
-        setUploadedFiles((prev) => ({
-          ...prev,
-          [docType]: { name: file.name, size: file.size },
-        }));
-        
-        // Clear the input
-        e.target.value = '';
-      };
-
-      reader.readAsDataURL(file);
+      setUploadedDocs((prev) => ({ ...prev, [docType]: true }));
+      toast.success(`${documents.find((d) => d.type === docType)?.label} uploaded successfully! ✓`);
+      setUploadedFiles((prev) => ({
+        ...prev,
+        [docType]: { name: file.name, size: file.size },
+      }));
+      e.target.value = '';
     } catch (error: any) {
       toast.error(error.message || 'Upload failed');
       e.target.value = '';

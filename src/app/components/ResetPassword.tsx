@@ -6,7 +6,7 @@ import { Card } from './ui/card';
 import { motion } from 'motion/react';
 import { Lock, CheckCircle, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
-import { supabase } from '../../utils/supabase';
+import { apiCall } from '../../utils/api';
 
 export default function ResetPassword() {
   const [newPassword, setNewPassword] = useState('');
@@ -14,14 +14,12 @@ export default function ResetPassword() {
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState('');
+  const [resetToken, setResetToken] = useState('');
 
   useEffect(() => {
-    // Check if we have a valid session from the reset link
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!session) {
-        setError('Invalid or expired reset link. Please request a new password reset.');
-      }
-    });
+    const token = new URLSearchParams(window.location.search).get('token');
+    if (!token) setError('Invalid or expired reset link. Please request a new password reset.');
+    else setResetToken(token);
   }, []);
 
   const handleResetPassword = async (e: React.FormEvent) => {
@@ -39,11 +37,10 @@ export default function ResetPassword() {
 
     setLoading(true);
     try {
-      const { error } = await supabase.auth.updateUser({
-        password: newPassword,
+      await apiCall('/auth/reset-password', {
+        method: 'POST',
+        body: JSON.stringify({ token: resetToken, newPassword }),
       });
-
-      if (error) throw error;
 
       setSuccess(true);
       toast.success('Password reset successfully!');

@@ -28,7 +28,7 @@ import {
   DialogFooter,
 } from './ui/dialog';
 import { useState } from 'react';
-import { apiCall } from '../../utils/supabase';
+import { apiCall } from '../../utils/api';
 import { toast } from 'sonner';
 
 interface SidebarProps {
@@ -111,11 +111,11 @@ export default function Sidebar({ currentPage, onNavigate }: SidebarProps) {
 
       <div className="p-4 border-b border-sidebar-border">
         <div className="flex items-center gap-3 p-3 rounded-lg bg-white/10 border border-white/15">
-          <div className="w-10 h-10 rounded-full bg-accent/30 border border-accent/50 flex items-center justify-center flex-shrink-0">
+          <div className="w-10 h-10 rounded-full bg-[#d4af37]/20 border border-[#d4af37]/50 flex items-center justify-center flex-shrink-0">
             {user?.role === 'admin' ? (
-              <Shield className="w-5 h-5 text-accent" />
+              <Shield className="w-5 h-5 text-[#f2d675]" />
             ) : (
-              <User className="w-5 h-5 text-accent" />
+              <User className="w-5 h-5 text-[#f2d675]" />
             )}
           </div>
           <div className="flex-1 min-w-0">

@@ -36,10 +36,10 @@ A full-stack Islamic finance management platform built for tracking payments, ma
 | Styling | Tailwind CSS v4, shadcn/ui, Radix UI |
 | Animations | Motion (Framer Motion) |
 | Charts | Recharts |
-| Backend | Supabase Edge Functions (Deno + Hono) |
-| Database | Supabase (PostgreSQL + KV Store) |
-| Storage | Supabase Storage (KYC documents) |
-| Auth | Supabase Auth (JWT) |
+| Backend | Node.js, Express |
+| Database | MongoDB Atlas |
+| Storage | MongoDB GridFS (KYC documents) |
+| Auth | Express API, bcrypt password hashing, JWT |
 | Icons | Lucide React |
 
 ---
@@ -47,62 +47,31 @@ A full-stack Islamic finance management platform built for tracking payments, ma
 ## 🚀 Getting Started
 
 ### Prerequisites
-- Node.js 18+
+- Node.js 20+
 - pnpm (recommended) or npm
-- Supabase account & project
+- MongoDB Atlas cluster
 
-### 1. Clone the repository
-
-```bash
-git clone https://github.com/your-username/halal-finance-software.git
-cd halal-finance-software
-```
-
-### 2. Install dependencies
+### 1. Install dependencies and configure secrets
 
 ```bash
-pnpm install
-# or
 npm install
 ```
 
-### 3. Configure Supabase
+Copy `backend/.env.example` to `backend/.env` (or use the existing local file) and set its values. `backend/.env` is ignored by Git.
 
-Update `utils/supabase/info.tsx` with your Supabase project credentials:
+Set the backend-only `MONGODB_URI` and a strong random `JWT_SECRET`; neither should use a `VITE_` prefix or be placed in frontend code. Set `ADMIN_EMAIL` and `ADMIN_PASSWORD` to create the first administrator on startup. Password-reset emails additionally require `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, and `SMTP_FROM`.
 
-```ts
-export const projectId = 'your-project-id';
-export const publicAnonKey = 'your-anon-key';
-```
+Set `MONGODB_DB=halal_finance` to choose the database name. In MongoDB Atlas, allow network access only from the backend host.
 
-### 4. Set up the database
-
-Create the KV store table in your Supabase SQL editor:
-
-```sql
-CREATE TABLE kv_store_bcce5cc4 (
-  key TEXT NOT NULL PRIMARY KEY,
-  value JSONB NOT NULL
-);
-```
-
-### 5. Deploy the Edge Function
+### 2. Run the application
 
 ```bash
-npx supabase login
-npx supabase link --project-ref your-project-ref
-npx supabase functions deploy make-server-bcce5cc4
-```
-
-### 6. Run the development server
-
-```bash
-pnpm dev
-# or
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173) in your browser.
+This starts the API on port `3001` and Vite on port `5173`. The frontend defaults to `http://localhost:3001/api`; set `VITE_API_BASE_URL` at build time when deploying the frontend elsewhere.
+
+Existing Supabase users, payments, announcements, and KYC files are not copied automatically. Export/import those records before switching production traffic if existing data must be retained. The application itself no longer includes Supabase client or Edge Function code.
 
 ---
 
@@ -131,12 +100,10 @@ Open [http://localhost:5173](http://localhost:5173) in your browser.
 │   │   └── App.tsx                  # Root routing
 │   ├── styles/                      # Global CSS & theme variables
 │   └── utils/
-│       └── supabase.ts              # API call helper
-├── supabase/
-│   └── functions/
-│       └── make-server-bcce5cc4/
-│           ├── index.ts             # All backend API endpoints
-│           └── kv_store.ts          # Key-value database helper
+│       └── api.ts                   # Express API call helper
+├── backend/
+│   ├── index.js                     # Express API and MongoDB access
+│   └── .env                         # Local secrets (ignored by Git)
 └── public/                          # Static assets
 ```
 
@@ -149,7 +116,7 @@ Open [http://localhost:5173](http://localhost:5173) in your browser.
 | `user` | Dashboard, KYC upload, payment submission |
 | `admin` | All user features + full admin panel |
 
-The first admin account must be created manually or by setting `role: 'admin'` during signup.
+The first admin account is created on backend startup when `ADMIN_EMAIL` and `ADMIN_PASSWORD` are set in `backend/.env`. Public signup always creates a regular user.
 
 ---
 
@@ -162,6 +129,7 @@ The first admin account must be created manually or by setting `role: 'admin'` d
 | GET | `/auth/session` | Get current session |
 | POST | `/auth/change-password` | Change password |
 | POST | `/auth/forgot-password` | Send reset email |
+| POST | `/auth/reset-password` | Reset password with a one-time email token |
 | GET | `/user/profile` | Get user profile |
 | PUT | `/user/profile` | Update profile / KYC status |
 | POST | `/user/kyc/upload` | Upload KYC document |
@@ -180,6 +148,8 @@ The first admin account must be created manually or by setting `role: 'admin'` d
 | POST | `/admin/announcements` | Create announcement |
 | DELETE | `/admin/announcements/:id` | Remove announcement |
 | GET | `/admin/audit-logs` | Get audit log |
+
+All API routes use the `/api` prefix. Authenticated requests use a bearer token.
 
 ---
 

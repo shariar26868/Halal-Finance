@@ -1,11 +1,19 @@
-import { createClient } from '@supabase/supabase-js';
-import { projectId, publicAnonKey } from '../../utils/supabase/info';
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001/api').replace(/\/$/, '');
 
-const supabaseUrl = `https://${projectId}.supabase.co`;
-
-export const supabase = createClient(supabaseUrl, publicAnonKey);
-
-const API_BASE = `${supabaseUrl}/functions/v1/make-server-bcce5cc4`;
+export const fileToBase64 = (file: File): Promise<string> => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => {
+    const result = reader.result?.toString();
+    const separator = result?.indexOf(',');
+    if (!result || separator === undefined || separator < 0) {
+      reject(new Error('Could not read the selected file'));
+      return;
+    }
+    resolve(result.slice(separator + 1));
+  };
+  reader.onerror = () => reject(reader.error || new Error('Could not read the selected file'));
+  reader.readAsDataURL(file);
+});
 
 // Helper function for API calls
 export const apiCall = async (endpoint: string, options: RequestInit = {}) => {
@@ -13,7 +21,7 @@ export const apiCall = async (endpoint: string, options: RequestInit = {}) => {
 
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
-    ...(token ? { 'Authorization': `Bearer ${token}` } : { 'Authorization': `Bearer ${publicAnonKey}` }),
+    ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
     ...options.headers,
   };
 

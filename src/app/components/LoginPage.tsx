@@ -9,7 +9,7 @@ import GeometricPattern from './GeometricPattern';
 import { motion } from 'motion/react';
 import { Wallet, Lock, Mail, Phone, User, ArrowLeft } from 'lucide-react';
 import { toast } from 'sonner';
-import { apiCall } from '../../utils/supabase';
+import { apiCall } from '../../utils/api';
 
 export default function LoginPage() {
   const { login, signup } = useAuth();
