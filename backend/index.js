@@ -41,7 +41,7 @@ app.use(cors({
   allowedHeaders: ["Content-Type", "Authorization"],
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
 }));
-app.use(express.json({ limit: "14mb" }));
+app.use(express.json({ limit: "70mb" }));
 
 const publicUser = (user) => {
   const { passwordHash, passwordChangedAt, ...profile } = user;
@@ -63,6 +63,36 @@ const addAuditLog = async (entry) => {
   });
 };
 const sendError = (res, status, message) => res.status(status).json({ error: message });
+const decodeBase64File = (data, maxBytes) => {
+  if (typeof data !== "string" || !/^[\da-z+/]*={0,2}$/i.test(data)) {
+    throw Object.assign(new Error("Invalid file data"), { status: 400 });
+  }
+  const buffer = Buffer.from(data, "base64");
+  if (!buffer.length || buffer.length > maxBytes) {
+    throw Object.assign(new Error(`File must be less than ${Math.round(maxBytes / 1024 / 1024)}MB`), { status: 400 });
+  }
+  return buffer;
+};
+const uploadGridFile = async ({ name, data, contentType, userId, kind, maxBytes }) => {
+  const buffer = decodeBase64File(data, maxBytes);
+  const safeName = String(name || "upload").replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 100);
+  const stream = bucket.openUploadStream(`${Date.now()}_${safeName}`, {
+    contentType: contentType || "application/octet-stream",
+    metadata: { userId, kind, contentType: contentType || "application/octet-stream" },
+  });
+  const completed = once(stream, "finish");
+  stream.end(buffer);
+  await completed;
+  return stream.id.toString();
+};
+const signedFileUrl = (req, fileId, userId, purpose) => {
+  const token = jwt.sign(
+    { purpose, fileId, userId },
+    process.env.JWT_SECRET,
+    { expiresIn: "1h" },
+  );
+  return `${req.protocol}://${req.get("host")}/api/files/${fileId}?token=${token}`;
+};
 
 const authenticate = async (req, res, next) => {
   const token = req.get("authorization")?.replace(/^Bearer\s+/i, "");
@@ -102,7 +132,10 @@ const issueToken = (user) => jwt.sign(
   { expiresIn: "8h" },
 );
 
-const recordUser = async ({ email, password, name, phone, role = "user", createdBy }) => {
+const recordUser = async ({
+  email, password, name, phone, role = "user", createdBy,
+  shares, monthlyInstallment, totalTarget,
+}) => {
   const normalizedEmail = String(email).trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
     throw Object.assign(new Error("Please enter a valid email address"), { status: 400 });
@@ -118,6 +151,9 @@ const recordUser = async ({ email, password, name, phone, role = "user", created
     role,
     createdAt: new Date().toISOString(),
     kycStatus: "pending",
+    ...(shares !== undefined ? { shares: Math.max(0, Number(shares) || 0) } : {}),
+    ...(monthlyInstallment !== undefined ? { monthlyInstallment: Math.max(1, Number(monthlyInstallment) || 5000) } : {}),
+    ...(totalTarget !== undefined ? { totalTarget: Math.max(0, Number(totalTarget) || 0) } : {}),
     ...(createdBy ? { createdBy } : {}),
     passwordHash: await bcrypt.hash(password, 12),
   };
@@ -130,6 +166,95 @@ const recordUser = async ({ email, password, name, phone, role = "user", created
     throw error;
   }
   return user;
+};
+
+const latestApprovedMonth = async (userId) => {
+  const approved = (await getRecordsByPrefix(`payment:${userId}:`))
+    .filter((payment) => payment.status === "approved" && /^\d{4}-\d{2}$/.test(payment.paidMonth || ""))
+    .sort((a, b) => b.paidMonth.localeCompare(a.paidMonth));
+  if (approved.length) {
+    const [year, month] = approved[0].paidMonth.split("-").map(Number);
+    return new Date(year, month, 1);
+  }
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), 1);
+};
+
+const createInstallmentPayments = async ({
+  userId, paymentDate, paidFrom, transactionId, amount, screenshotPath,
+  status, createdBy, createdById, monthlyInstallment = 5000,
+}) => {
+  const rate = Number(monthlyInstallment) || 5000;
+  const fullMonths = Math.floor(amount / rate);
+  const extraAmount = amount % rate;
+  const startMonth = await latestApprovedMonth(userId);
+  const now = Date.now();
+  const createdAt = new Date().toISOString();
+  const payments = [];
+  for (let index = 0; index < fullMonths; index++) {
+    const date = new Date(startMonth.getFullYear(), startMonth.getMonth() + index, 1);
+    const paidMonth = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+    const id = `payment:${userId}:${now + index}:${crypto.randomUUID()}`;
+    const payment = {
+      id, userId, paymentDate, dateOfEntry: createdAt, paidFrom, transactionId,
+      paidMonth, paidAmount: rate, status, createdBy, createdAt,
+      isPartOfBatch: fullMonths > 1, batchTotal: amount, batchMonths: fullMonths,
+      ...(screenshotPath ? { screenshotPath } : {}),
+      ...(createdById ? { createdById } : {}),
+    };
+    await setRecord(id, payment);
+    payments.push(payment);
+  }
+  if (extraAmount > 0) {
+    const id = `payment:${userId}:${now + fullMonths}:${crypto.randomUUID()}`;
+    const extra = {
+      id, userId, paymentDate, dateOfEntry: createdAt, paidFrom, transactionId,
+      paidMonth: "extra", paidAmount: extraAmount, status, createdBy, createdAt,
+      isExtra: true, ...(screenshotPath ? { screenshotPath } : {}),
+      ...(createdById ? { createdById } : {}),
+    };
+    await setRecord(id, extra);
+    payments.push(extra);
+  }
+  return { payments, fullMonths, extraAmount };
+};
+
+const applyLateFees = async (user) => {
+  if (!user?.createdAt) return;
+  const payments = await getRecordsByPrefix(`payment:${user.id}:`);
+  const approvedMonths = new Set(payments
+    .filter((payment) => payment.status === "approved" && /^\d{4}-\d{2}$/.test(payment.paidMonth || ""))
+    .map((payment) => payment.paidMonth));
+  const joinDate = new Date(user.createdAt);
+  const now = new Date();
+  const month = new Date(joinDate.getFullYear(), joinDate.getMonth(), 1);
+  let missed = 0;
+  let streakStart = "";
+  while (month <= now) {
+    const monthKey = `${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, "0")}`;
+    if (approvedMonths.has(monthKey)) {
+      missed = 0;
+      streakStart = "";
+    } else {
+      if (!missed) streakStart = monthKey;
+      missed++;
+      if (missed === 2) {
+        const feeKey = `latefee:${user.id}:${streakStart}`;
+        if (!(await getRecord(feeKey))) {
+          const createdAt = now.toISOString();
+          const id = `payment:${user.id}:latefee:${crypto.randomUUID()}`;
+          await setRecord(id, {
+            id, userId: user.id, paymentDate: createdAt.slice(0, 10), dateOfEntry: createdAt,
+            paidFrom: "system", transactionId: `LATEFEE-${streakStart}`,
+            paidMonth: `late-fee:${streakStart}`, paidAmount: 500, status: "approved",
+            createdBy: "system", createdAt, isLateFee: true, lateFeeFor: streakStart,
+          });
+          await setRecord(feeKey, { applied: true, chargeId: id, appliedAt: createdAt });
+        }
+      }
+    }
+    month.setMonth(month.getMonth() + 1);
+  }
 };
 
 api.get("/health", (_req, res) => res.json({ status: "ok" }));
@@ -360,28 +485,118 @@ api.get("/user/kyc/file/:fileId", async (req, res, next) => {
   }
 });
 
-api.post("/payments/submit", authenticate, async (req, res) => {
-  const { paymentDate, paidFrom, transactionId, paidMonth, paidAmount } = req.body;
-  const amount = Number(paidAmount);
-  if (!paymentDate || !paidFrom || !transactionId || !paidMonth || !Number.isFinite(amount) || amount <= 0) {
-    return sendError(res, 400, "Missing or invalid required payment fields");
+api.get("/files/:fileId", async (req, res, next) => {
+  try {
+    const payload = jwt.verify(req.query.token, process.env.JWT_SECRET);
+    if (typeof payload !== "object" || payload.purpose !== "private-file" ||
+        payload.fileId !== req.params.fileId || !ObjectId.isValid(req.params.fileId)) {
+      return sendError(res, 401, "Invalid file link");
+    }
+    const fileId = new ObjectId(req.params.fileId);
+    const [file] = await bucket.find({ _id: fileId }).toArray();
+    if (!file || file.metadata?.userId !== payload.userId) return sendError(res, 404, "File not found");
+    res.type(file.metadata?.contentType || "application/octet-stream");
+    res.set("Content-Disposition", "inline");
+    bucket.openDownloadStream(fileId).on("error", next).pipe(res);
+  } catch {
+    sendError(res, 401, "Invalid or expired file link");
   }
-  const id = `payment:${req.user.id}:${Date.now()}:${crypto.randomUUID()}`;
-  const payment = {
-    id, userId: req.user.id, paymentDate, dateOfEntry: new Date().toISOString(),
-    paidFrom, transactionId, paidMonth, paidAmount: amount, status: "pending",
-    createdBy: "user", createdAt: new Date().toISOString(),
-  };
-  await setRecord(id, payment);
-  res.status(201).json({ message: "Payment submitted for approval", payment });
+});
+
+api.get("/payments/screenshot/:paymentId", authenticate, async (req, res) => {
+  const payment = await getRecord(decodeURIComponent(req.params.paymentId));
+  if (!payment) return sendError(res, 404, "Payment not found");
+  if (req.user.role !== "admin" && payment.userId !== req.user.id) return sendError(res, 403, "Forbidden");
+  if (!payment.screenshotPath || !ObjectId.isValid(payment.screenshotPath)) {
+    return sendError(res, 404, "No screenshot for this payment");
+  }
+  const [file] = await bucket.find({ _id: new ObjectId(payment.screenshotPath) }).toArray();
+  if (!file || file.metadata?.userId !== payment.userId) return sendError(res, 404, "Screenshot not found");
+  res.json({ url: signedFileUrl(req, payment.screenshotPath, payment.userId, "private-file") });
+});
+
+api.post("/payments/submit", authenticate, async (req, res) => {
+  const { paymentDate, paidFrom, transactionId, paidAmount, paymentScreenshot } = req.body;
+  const amount = Number(paidAmount);
+  const monthlyInstallment = Number(req.user.monthlyInstallment) || 5000;
+  if (!paymentDate || !paidFrom || !transactionId || !Number.isFinite(amount) || amount < monthlyInstallment) {
+    return sendError(res, 400, `Payment must be at least ৳${monthlyInstallment}`);
+  }
+  if (!paymentScreenshot?.fileData || !paymentScreenshot?.fileName) {
+    return sendError(res, 400, "Payment screenshot is required");
+  }
+  const screenshot = decodeBase64File(paymentScreenshot.fileData, 5 * 1024 * 1024);
+  const validImage = {
+    "image/jpeg": screenshot[0] === 0xff && screenshot[1] === 0xd8 && screenshot[2] === 0xff,
+    "image/png": screenshot.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+    "image/webp": screenshot.subarray(0, 4).toString() === "RIFF" && screenshot.subarray(8, 12).toString() === "WEBP",
+  }[paymentScreenshot.fileType];
+  if (!validImage) return sendError(res, 400, "Payment screenshot must be a valid JPEG, PNG, or WebP image");
+  const screenshotPath = await uploadGridFile({
+    name: paymentScreenshot.fileName, data: paymentScreenshot.fileData,
+    contentType: paymentScreenshot.fileType, userId: req.user.id, kind: "payment-screenshot",
+    maxBytes: 5 * 1024 * 1024,
+  });
+  const result = await createInstallmentPayments({
+    userId: req.user.id, paymentDate, paidFrom, transactionId, amount, screenshotPath,
+    status: "pending", createdBy: "user", monthlyInstallment,
+  });
+  res.status(201).json({
+    message: `Payment submitted for ${result.fullMonths} month(s)${result.extraAmount ? ` + ৳${result.extraAmount} extra` : ""}`,
+    payments: result.payments,
+  });
 });
 
 api.get("/payments/user", authenticate, async (req, res) => {
+  await applyLateFees(req.user);
   const payments = (await getRecordsByPrefix(`payment:${req.user.id}:`))
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-  const totalPaid = payments.filter((payment) => payment.status === "approved")
+  const totalPaid = payments.filter((payment) => payment.status === "approved" && !payment.isLateFee && payment.paidMonth !== "extra")
     .reduce((sum, payment) => sum + Number(payment.paidAmount || 0), 0);
-  res.json({ payments, totalPaid });
+  const totalLateFees = payments.filter((payment) => payment.status === "approved" && payment.isLateFee)
+    .reduce((sum, payment) => sum + Number(payment.paidAmount || 0), 0);
+  res.json({ payments, totalPaid, totalLateFees });
+});
+
+api.get("/account/statement", authenticate, async (req, res) => {
+  await applyLateFees(req.user);
+  const payments = await getRecordsByPrefix(`payment:${req.user.id}:`);
+  const regular = payments.filter((payment) =>
+    !payment.isLateFee && payment.paidMonth !== "extra" && payment.status === "approved");
+  const extras = payments.filter((payment) => payment.paidMonth === "extra" && payment.status === "approved");
+  const lateFees = payments.filter((payment) => payment.isLateFee && payment.status === "approved");
+  const pending = payments.filter((payment) => payment.status === "pending" && !payment.isLateFee);
+  const totalPaid = regular.reduce((sum, payment) => sum + Number(payment.paidAmount || 0), 0);
+  const totalExtra = extras.reduce((sum, payment) => sum + Number(payment.paidAmount || 0), 0);
+  const totalLateFees = lateFees.reduce((sum, payment) => sum + Number(payment.paidAmount || 0), 0);
+  const totalTarget = Number(req.user.totalTarget) || 0;
+  const ledger = payments
+    .filter((payment) => payment.status === "approved" || payment.status === "pending")
+    .map((payment) => ({
+      id: payment.id,
+      date: payment.dateOfEntry || payment.createdAt,
+      type: payment.isLateFee ? "late_fee" :
+        payment.paidMonth === "extra" ? "extra" :
+        payment.status === "pending" ? "pending" : "payment",
+      description: payment.isLateFee ? `Late fee — missed 2 months from ${payment.lateFeeFor}` :
+        payment.paidMonth === "extra" ? "Extra amount" :
+        payment.status === "pending" ? `Payment for ${payment.paidMonth} (pending)` :
+        `Payment for ${payment.paidMonth}`,
+      amount: payment.paidAmount,
+      status: payment.status,
+      paidFrom: payment.paidFrom,
+    }))
+    .sort((a, b) => new Date(b.date) - new Date(a.date));
+  res.json({
+    summary: {
+      totalPaid, totalExtra, totalLateFees, totalTarget,
+      remainingDue: Math.max(0, totalTarget - totalPaid),
+      monthlyInstallment: Number(req.user.monthlyInstallment) || 5000,
+      monthsPaid: regular.length,
+      pendingCount: pending.length,
+    },
+    ledger,
+  });
 });
 
 api.get("/admin/payments", authenticate, requireAdmin, async (_req, res) => {
@@ -398,20 +613,30 @@ api.get("/admin/payments", authenticate, requireAdmin, async (_req, res) => {
 });
 
 api.post("/admin/payments/add", authenticate, requireAdmin, async (req, res) => {
-  const { userId, paymentDate, paidFrom, transactionId, paidMonth, paidAmount } = req.body;
+  const { userId, paymentDate, paidFrom, transactionId, paidAmount, paymentScreenshot } = req.body;
   const amount = Number(paidAmount);
-  if (!userId || !paymentDate || !paidFrom || !paidMonth || !Number.isFinite(amount) || amount <= 0) {
+  if (!userId || !paymentDate || !paidFrom || !Number.isFinite(amount) || amount < 5000) {
     return sendError(res, 400, "Missing or invalid required fields");
   }
-  if (!(await users.findOne({ id: userId }))) return sendError(res, 404, "User not found");
-  const id = `payment:${userId}:${Date.now()}:${crypto.randomUUID()}`;
-  const payment = {
-    id, userId, paymentDate, dateOfEntry: new Date().toISOString(), paidFrom,
-    transactionId: transactionId || "N/A", paidMonth, paidAmount: amount, status: "approved",
-    createdBy: "admin", createdById: req.user.id, createdAt: new Date().toISOString(),
-  };
-  await setRecord(id, payment);
-  res.status(201).json({ message: "Payment added successfully", payment });
+  const targetUser = await users.findOne({ id: userId });
+  if (!targetUser) return sendError(res, 404, "User not found");
+  if (!paymentScreenshot?.fileData || !paymentScreenshot?.fileName) {
+    return sendError(res, 400, "Payment screenshot is required");
+  }
+  const screenshotPath = await uploadGridFile({
+    name: paymentScreenshot.fileName, data: paymentScreenshot.fileData,
+    contentType: paymentScreenshot.fileType, userId, kind: "payment-screenshot",
+    maxBytes: 5 * 1024 * 1024,
+  });
+  const result = await createInstallmentPayments({
+    userId, paymentDate, paidFrom, transactionId: transactionId || "N/A", amount,
+    screenshotPath, status: "approved", createdBy: "admin", createdById: req.user.id,
+    monthlyInstallment: targetUser.monthlyInstallment || 5000,
+  });
+  res.status(201).json({
+    message: `Payment added for ${result.fullMonths} month(s)${result.extraAmount ? ` + ৳${result.extraAmount} extra` : ""}`,
+    payments: result.payments,
+  });
 });
 
 api.post("/admin/payments/:paymentId/approve", authenticate, requireAdmin, async (req, res) => {
@@ -466,6 +691,71 @@ api.get("/admin/users/:userId", authenticate, requireAdmin, async (req, res) => 
   });
 });
 
+api.get("/admin/users/:userId/analytics", authenticate, requireAdmin, async (req, res) => {
+  const target = await users.findOne({ id: req.params.userId });
+  if (!target) return sendError(res, 404, "User not found");
+  const payments = await getRecordsByPrefix(`payment:${target.id}:`);
+  const approved = payments.filter((payment) => payment.status === "approved" && payment.paidMonth !== "extra" && !payment.isLateFee);
+  const pending = payments.filter((payment) => payment.status === "pending");
+  const rejected = payments.filter((payment) => payment.status === "rejected");
+  const extras = payments.filter((payment) => payment.paidMonth === "extra" && payment.status === "approved");
+  const totalPaid = approved.reduce((sum, payment) => sum + Number(payment.paidAmount || 0), 0);
+  const totalPending = pending.reduce((sum, payment) => sum + Number(payment.paidAmount || 0), 0);
+  const monthlyInstallment = Number(target.monthlyInstallment) || 5000;
+  const totalTarget = Number(target.totalTarget) || 0;
+  const sortedApproved = approved
+    .filter((payment) => /^\d{4}-\d{2}$/.test(payment.paidMonth || ""))
+    .sort((a, b) => b.paidMonth.localeCompare(a.paidMonth));
+  let dueMonths;
+  let dueAmount;
+  if (totalTarget > 0) {
+    dueAmount = Math.max(0, totalTarget - totalPaid);
+    dueMonths = dueAmount > 0 ? Math.ceil(dueAmount / monthlyInstallment) : 0;
+  } else {
+    const joined = new Date(target.createdAt);
+    const now = new Date();
+    const monthsSinceJoining = Math.max(0,
+      (now.getFullYear() - joined.getFullYear()) * 12 + now.getMonth() - joined.getMonth());
+    dueMonths = Math.max(0, monthsSinceJoining - sortedApproved.length);
+    dueAmount = dueMonths * monthlyInstallment;
+  }
+  res.json({
+    user: {
+      ...publicUser(target),
+      shares: Number(target.shares) || 0,
+      monthlyInstallment,
+      totalTarget,
+    },
+    analytics: {
+      totalPaid, totalPending,
+      extraBalance: extras.reduce((sum, payment) => sum + Number(payment.paidAmount || 0), 0),
+      monthsPaid: sortedApproved.length, dueMonths, dueAmount,
+      monthlyInstallment, totalTarget, remainingTarget: dueAmount,
+      lastPaidMonth: sortedApproved[0]?.paidMonth || null,
+      totalPayments: payments.length, approvedCount: approved.length,
+      pendingCount: pending.length, rejectedCount: rejected.length,
+      contributionHistory: [...approved]
+        .sort((a, b) => a.paidMonth.localeCompare(b.paidMonth))
+        .map((payment) => ({
+          month: payment.paidMonth, amount: payment.paidAmount,
+          paidFrom: payment.paidFrom, date: payment.paymentDate,
+        })),
+    },
+  });
+});
+
+api.patch("/admin/users/:userId/shares", authenticate, requireAdmin, async (req, res) => {
+  const target = await users.findOne({ id: req.params.userId });
+  if (!target) return sendError(res, 404, "User not found");
+  const shares = Math.max(0, Number.parseInt(req.body.shares, 10) || 0);
+  const monthlyInstallment = Math.max(1, Number(req.body.monthlyInstallment) || 5000);
+  const totalTarget = Math.max(0, Number(req.body.totalTarget) || 0);
+  await users.updateOne({ id: target.id }, {
+    $set: { shares, monthlyInstallment, totalTarget, updatedAt: new Date().toISOString() },
+  });
+  res.json({ message: "Updated", shares, monthlyInstallment, totalTarget });
+});
+
 api.put("/admin/users/:userId", authenticate, requireAdmin, async (req, res) => {
   const target = await users.findOne({ id: req.params.userId });
   if (!target) return sendError(res, 404, "User not found");
@@ -488,12 +778,15 @@ api.put("/admin/users/:userId", authenticate, requireAdmin, async (req, res) => 
 
 api.post("/admin/users/create", authenticate, requireAdmin, async (req, res, next) => {
   try {
-    const { email, password, name, phone, role = "user" } = req.body;
+    const { email, password, name, phone, role = "user", shares, monthlyInstallment, totalTarget } = req.body;
     if (!email || !password || !name || !phone) {
       return sendError(res, 400, "Missing required fields: email, password, name, phone");
     }
     if (!["user", "admin"].includes(role)) return sendError(res, 400, "Invalid role");
-    const user = await recordUser({ email, password, name, phone, role, createdBy: req.user.id });
+    const user = await recordUser({
+      email, password, name, phone, role, createdBy: req.user.id,
+      shares, monthlyInstallment, totalTarget,
+    });
     res.status(201).json({ message: "User created successfully", userId: user.id });
   } catch (error) {
     if (error.status) return sendError(res, error.status, error.message);
@@ -545,6 +838,93 @@ api.get("/admin/audit-logs", authenticate, requireAdmin, async (_req, res) => {
   const logs = (await getRecordsByPrefix("audit:"))
     .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
   res.json({ logs: logs.slice(0, 100) });
+});
+
+api.post("/plots/submit", authenticate, async (req, res) => {
+  const { title, description, location, area, price, contactNumber, link,
+    videoData, videoFileName, videoFileType } = req.body;
+  if (!title || !description || !location) {
+    return sendError(res, 400, "Missing required fields: title, description, location");
+  }
+  let videoPath;
+  if (videoData) {
+    if (!videoFileName || !String(videoFileType).startsWith("video/")) {
+      return sendError(res, 400, "Invalid plot video");
+    }
+    videoPath = await uploadGridFile({
+      name: videoFileName, data: videoData, contentType: videoFileType,
+      userId: req.user.id, kind: "plot-video", maxBytes: 50 * 1024 * 1024,
+    });
+  }
+  const id = `plot:${Date.now()}:${req.user.id}:${crypto.randomUUID()}`;
+  const plot = {
+    id, userId: req.user.id, userName: req.user.name || "Unknown",
+    userEmail: req.user.email, title: String(title).trim(),
+    description: String(description).trim(), location: String(location).trim(),
+    area: area || "", price: price || "", contactNumber: contactNumber || "",
+    link: link || "", videoPath: videoPath || null,
+    status: "pending", createdAt: new Date().toISOString(),
+  };
+  await setRecord(id, plot);
+  res.status(201).json({ message: "Plot information submitted for review", plot });
+});
+
+api.get("/plots", authenticate, async (_req, res) => {
+  const plots = (await getRecordsByPrefix("plot:"))
+    .filter((plot) => plot.status === "approved")
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  res.json({ plots });
+});
+
+api.get("/admin/plots", authenticate, requireAdmin, async (_req, res) => {
+  const plots = (await getRecordsByPrefix("plot:"))
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  res.json({ plots });
+});
+
+api.put("/admin/plots/:plotId", authenticate, requireAdmin, async (req, res) => {
+  const plot = await getRecord(req.params.plotId);
+  if (!plot) return sendError(res, 404, "Plot not found");
+  const { status, adminNote } = req.body;
+  if (!["approved", "rejected"].includes(status)) {
+    return sendError(res, 400, "Status must be approved or rejected");
+  }
+  plot.status = status;
+  plot.adminNote = adminNote || "";
+  plot.reviewedBy = req.user.id;
+  plot.reviewedAt = new Date().toISOString();
+  await setRecord(plot.id, plot);
+  await addAuditLog({
+    action: `plot_${status}`, performedBy: req.user.id,
+    performedByName: req.user.name || "Admin",
+    details: `Plot "${plot.title}" by ${plot.userName} ${status}`,
+  });
+  res.json({ message: `Plot ${status}`, plot });
+});
+
+api.delete("/admin/plots/:plotId", authenticate, requireAdmin, async (req, res) => {
+  const plot = await getRecord(req.params.plotId);
+  if (!plot) return sendError(res, 404, "Plot not found");
+  await records.deleteOne({ key: plot.id });
+  if (plot.videoPath && ObjectId.isValid(plot.videoPath)) {
+    await bucket.delete(new ObjectId(plot.videoPath)).catch((error) => {
+      console.error("Plot video cleanup failed:", error);
+    });
+  }
+  res.json({ message: "Plot deleted" });
+});
+
+api.get("/plots/video/:plotId", authenticate, async (req, res) => {
+  const plot = await getRecord(req.params.plotId);
+  if (!plot || !plot.videoPath || !ObjectId.isValid(plot.videoPath)) {
+    return sendError(res, 404, "Video not found");
+  }
+  if (req.user.role !== "admin" && plot.status !== "approved" && plot.userId !== req.user.id) {
+    return sendError(res, 403, "Forbidden");
+  }
+  const [file] = await bucket.find({ _id: new ObjectId(plot.videoPath) }).toArray();
+  if (!file || file.metadata?.userId !== plot.userId) return sendError(res, 404, "Video not found");
+  res.json({ url: signedFileUrl(req, plot.videoPath, plot.userId, "private-file") });
 });
 
 app.use("/api", api);
